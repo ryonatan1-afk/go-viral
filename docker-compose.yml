@@ -1,0 +1,109 @@
+version: "3.9"
+
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: go-viral-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - NODE_ENV=production
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678/}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY is required}
+      - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_JWT_SECRET:?N8N_JWT_SECRET is required}
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - N8N_LOG_LEVEL=info
+      - GENERIC_TIMEZONE=${TZ:-America/New_York}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - FAL_KEY=${FAL_KEY}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/home/node/.n8n/workflows
+      - ./output:/output:rw
+      - ./templates:/templates:ro
+      - ./scripts:/scripts:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - viral-net
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: go-viral-worker
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - OUTPUT_DIR=/output
+      - TEMPLATES_DIR=/templates
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - FAL_KEY=${FAL_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./templates:/templates:ro
+      - ./output:/output:rw
+      - input_media:/input:rw
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - viral-net
+    command: >
+      sh -c "python scripts/api.py &
+             celery -A scripts.celery_app worker --loglevel=info --concurrency=2 -Q video"
+
+  redis:
+    image: redis:7-alpine
+    container_name: go-viral-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - viral-net
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+
+  flower:
+    image: mher/flower:2.0
+    container_name: go-viral-flower
+    restart: unless-stopped
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - FLOWER_PORT=5555
+      - FLOWER_BASIC_AUTH=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-changeme}
+    depends_on:
+      - redis
+    networks:
+      - viral-net
+
+volumes:
+  n8n_data:
+  redis_data:
+  input_media:
+
+networks:
+  viral-net:
+    driver: bridge

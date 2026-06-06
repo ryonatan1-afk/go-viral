@@ -1,0 +1,81 @@
+{
+  "name": "Go-Viral Video Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trigger-video",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json;\n\nif (!body.images || body.images.length !== 4) {\n  throw new Error('images array must have exactly 4 paths');\n}\nif (!body.titles || body.titles.length !== 4) {\n  throw new Error('titles array must have exactly 4 items');\n}\nif (!body.captions || body.captions.length !== 4) {\n  throw new Error('captions array must have exactly 4 items');\n}\n\nreturn [{\n  json: {\n    ...body,\n    output_dir: body.output_dir || '/output',\n    tick_sound: body.tick_sound || '/templates/audio/tick.mp3',\n    outro_sound: body.outro_sound || '/templates/audio/outro.mp3',\n    font_path: body.font_path || '/templates/fonts/bold.ttf',\n    platforms: body.platforms || ['tiktok_reels', 'youtube_shorts'],\n    webhook_url: body.webhook_url || null,\n    validated_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "validate-payload",
+      "name": "Validate & Enrich Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://go-viral-worker:6379",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "={{ JSON.stringify($json) }}"
+      },
+      "id": "enqueue-task",
+      "name": "Enqueue Celery Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [680, 300],
+      "notes": "Replace with direct Redis publish or Celery HTTP endpoint"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "video-done",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "done-webhook",
+      "name": "Receive Render Result",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const result = $input.first().json;\nconst status = result.status;\nconst outputs = result.outputs || {};\n\nconsole.log('Render completed:', JSON.stringify(result, null, 2));\n\nif (status === 'error') {\n  throw new Error('All platforms failed: ' + JSON.stringify(result.errors));\n}\n\nreturn [{ json: { ...result, processed_at: new Date().toISOString() } }];"
+      },
+      "id": "handle-result",
+      "name": "Handle Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{"node": "Validate & Enrich Payload", "type": "main", "index": 0}]]
+    },
+    "Validate & Enrich Payload": {
+      "main": [[{"node": "Enqueue Celery Task", "type": "main", "index": 0}]]
+    },
+    "Receive Render Result": {
+      "main": [[{"node": "Handle Result", "type": "main", "index": 0}]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

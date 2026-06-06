@@ -1,0 +1,258 @@
+{
+  "name": "Go-Viral Daily Band Puzzle Pipeline",
+  "nodes": [
+
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 9 * * *" }] }
+      },
+      "id": "cron-trigger",
+      "name": "Daily 9am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [200, 400]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://worker:8080/generate-content",
+        "options": { "timeout": 300000 }
+      },
+      "id": "generate-content",
+      "name": "Generate Band Ideas + Images",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [440, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nif (!data.ok) throw new Error('generate-content failed: ' + (data.error || JSON.stringify(data)));\nif (!data.bands || data.bands.length !== 4) throw new Error('Expected 4 bands, got: ' + JSON.stringify(data));\nreturn [{ json: data }];"
+      },
+      "id": "parse-content",
+      "name": "Parse Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 400]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://worker:8080/send-preview",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "date", "value": "={{ $json.date }}" },
+            { "name": "resume_url", "value": "={{ $resumeWebhookUrl }}" }
+          ]
+        },
+        "options": { "timeout": 60000 }
+      },
+      "id": "send-telegram-preview",
+      "name": "Send Telegram Preview",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [880, 240]
+    },
+
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {}
+      },
+      "id": "wait-for-approval",
+      "name": "Wait for Human Approval",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [880, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst action = body.action;\nconst dateKey = body.date;\n\nif (action === 'approve') {\n  return [{ json: { action: 'approve', date: dateKey, proceed: true } }];\n} else if (action === 'regen') {\n  return [{ json: { action: 'regen', date: dateKey, band_index: body.band_index, proceed: false } }];\n} else {\n  throw new Error('Unknown action: ' + action);\n}"
+      },
+      "id": "route-decision",
+      "name": "Approve or Regen?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 400]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{ "value1": "={{ $json.action }}", "operation": "equals", "value2": "approve" }]
+        }
+      },
+      "id": "if-approved",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1320, 400]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://worker:8080/render-videos",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ image_paths: $json.image_paths, titles: $json.titles, captions: $json.captions }) }}",
+        "options": { "timeout": 600000 }
+      },
+      "id": "render-videos",
+      "name": "Render Both Videos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1540, 300]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://worker:8080/generate-content",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ bands: $json.band_names.map((b, i) => i === $json.band_index ? '__REGEN__' : b) }) }}",
+        "options": { "timeout": 300000 }
+      },
+      "id": "regen-image",
+      "name": "Regenerate Single Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1540, 520]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nif (!data.ok && !data.outputs) throw new Error('Render failed: ' + JSON.stringify(data));\nreturn [{ json: { ...data, success: true } }];"
+      },
+      "id": "check-render",
+      "name": "Check Render Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 300]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://worker:8080/notify",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ message: '✅ Videos ready!\\n\\nBands: ' + $node['Parse Content'].json.band_names.join(', ') + '\\n\\nTikTok/Reels: 61s\\nYouTube Shorts: 59s', files: ['/output/tiktok_reels.mp4', '/output/youtube_shorts.mp4'] }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "notify-done",
+      "name": "Notify: Videos Ready",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1980, 300]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://worker:8080/notify",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ message: '❌ Render error\\n\\n' + JSON.stringify($json.errors || {}) }) }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "notify-error",
+      "name": "Notify: Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1980, 500]
+    },
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-callback",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "telegram-callback-webhook",
+      "name": "Telegram Callback Receiver",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 700]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const update = $input.first().json;\nconst callback = update.callback_query;\n\nif (!callback) return [];\n\nconst [action, dateKey, indexStr] = callback.data.split('|');\nconst resumeSidecar = `/output/content/resume_${dateKey}.txt`;\n\nconst { execSync } = require('child_process');\nlet resumeUrl;\ntry {\n  resumeUrl = execSync(`cat ${resumeSidecar}`).toString().trim();\n} catch(e) {\n  throw new Error(`Could not read resume URL from ${resumeSidecar}: ${e.message}`);\n}\n\nexecSync(`curl -s -X POST https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery -d callback_query_id=${callback.id} -d text=\"Got it!\"`);\n\nreturn [{\n  json: {\n    resume_url: resumeUrl,\n    action,\n    date: dateKey,\n    band_index: indexStr ? parseInt(indexStr) : null\n  }\n}];"
+      },
+      "id": "parse-callback",
+      "name": "Parse Telegram Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 700]
+    },
+
+    {
+      "parameters": {
+        "url": "={{ $json.resume_url }}",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify({ action: $json.action, date: $json.date, band_index: $json.band_index }) }}",
+        "options": {}
+      },
+      "id": "resume-execution",
+      "name": "Resume Paused Execution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [660, 700]
+    }
+
+  ],
+
+  "connections": {
+    "Daily 9am": {
+      "main": [[{ "node": "Generate Band Ideas + Images", "type": "main", "index": 0 }]]
+    },
+    "Generate Band Ideas + Images": {
+      "main": [[{ "node": "Parse Content", "type": "main", "index": 0 }]]
+    },
+    "Parse Content": {
+      "main": [[
+        { "node": "Send Telegram Preview", "type": "main", "index": 0 },
+        { "node": "Wait for Human Approval", "type": "main", "index": 0 }
+      ]]
+    },
+    "Wait for Human Approval": {
+      "main": [[{ "node": "Approve or Regen?", "type": "main", "index": 0 }]]
+    },
+    "Approve or Regen?": {
+      "main": [[{ "node": "Approved?", "type": "main", "index": 0 }]]
+    },
+    "Approved?": {
+      "main": [
+        [{ "node": "Render Both Videos", "type": "main", "index": 0 }],
+        [{ "node": "Regenerate Single Image", "type": "main", "index": 0 }]
+      ]
+    },
+    "Render Both Videos": {
+      "main": [[{ "node": "Check Render Result", "type": "main", "index": 0 }]]
+    },
+    "Check Render Result": {
+      "main": [
+        [{ "node": "Notify: Videos Ready", "type": "main", "index": 0 }],
+        [{ "node": "Notify: Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Telegram Callback Receiver": {
+      "main": [[{ "node": "Parse Telegram Callback", "type": "main", "index": 0 }]]
+    },
+    "Parse Telegram Callback": {
+      "main": [[{ "node": "Resume Paused Execution", "type": "main", "index": 0 }]]
+    }
+  },
+
+  "active": false,
+  "settings": { "executionOrder": "v1" }
+}
