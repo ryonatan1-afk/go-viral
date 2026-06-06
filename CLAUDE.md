@@ -27,26 +27,27 @@ Autonomous daily pipeline that generates "Guess the Band" visual puzzle videos f
 | `.env` | Secrets — never commit |
 
 ## Output
-- `output/tiktok_reels.mp4` — 4 × 14s slides + 5s outro = **61s**
-- `output/youtube_shorts.mp4` — 4 × 13.5s slides + 5s outro = **59s**
+- `output/tiktok_reels.mp4` — ~**54s**: animated hook → 4×(puzzle 10s + reveal 2.5s) → outro, all crossfaded (xfade)
+- **YouTube Shorts is DISABLED** (commented out in `PLATFORM_CONFIGS` in `generate_video.py` + dropped from the upload list in `api.py`). Re-enable both spots when ready.
 - `output/content/content_YYYY-MM-DD.json` — daily generated content cache
+- `output/content/used_bands.csv` — persistent band-dedup log (date,band,difficulty)
 
 ## Video spec
-- Canvas: **1080 × 1920** (9:16 strict)
-- FPS: 30
-- Ken Burns zoom: 1.0 → 1.12 over slide duration
-- Countdown: 5…4…3…2…1 shown last 5s of each slide
-- Audio: tick.wav looped per slide, outro.wav on CTA screen
+- Canvas: **1080 × 1920** (9:16 strict), FPS 30
+- Structure: hook (3s, blurred 2×2 collage + animated text) → per band: puzzle (Ken Burns 1.0→1.12, big title + caption on dark boxes, difficulty badge, progress bar, 3-2-1 countdown) → reveal (darkened image + band-name scale-pop). xfade `fade` 0.4s between all segments.
+- Text: auto-fit font sizes (`fit_fontsize`), `sanitize_text` strips emoji/quotes/`%` (apostrophes & `%` break unquoted drawtext). Background boxes for legibility.
+- Audio (all numpy-synthesized in `generate_audio_assets.py`): `beat.wav` music bed, `scratch.wav` on each new slide, `whoosh.wav`+`ding.wav` on reveals, `outro.wav` jingle. Mixed in one final ffmpeg pass.
 - Font: Bebas Neue Bold (`templates/fonts/bold.ttf`)
 
 ## Daily pipeline flow
 ```
-09:00 cron → Claude picks 4 bands → fal.ai generates 4 images
-→ Telegram preview sent (spoiler band names + Approve/Regen buttons)
-→ pipeline PAUSES (n8n Wait node)
-→ user taps ✅ Approve → pipeline resumes
-→ ffmpeg renders both MP4s (~2.5min) → Telegram sends video files
+catch-up trigger (every 15m, 09:00-22:45) → GET worker:8080/needs-run
+→ if today's content missing → Claude picks 4 bands (avoids used_bands.csv) → fal.ai generates 4 images
+→ Telegram preview sent (Approve/Regen buttons) → pipeline PAUSES (n8n Wait node)
+→ user taps ✅ Approve → resume → ffmpeg renders tiktok_reels.mp4 (~3.5min)
+→ worker background thread sends video directly to Telegram
 ```
+Note: exact 09:00 trigger is DISABLED; the 15-min catch-up covers 09:00 and recovers slept-through days on wake.
 
 ## Infrastructure
 - n8n UI: http://localhost:5678
