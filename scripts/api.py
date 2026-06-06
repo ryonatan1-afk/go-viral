@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 from flask import Flask, jsonify, request
@@ -40,6 +41,17 @@ def _run(cmd: list[str], timeout: int = 300) -> dict:
 @app.get("/health")
 def health():
     return jsonify({"ok": True})
+
+
+@app.get("/needs-run")
+def needs_run():
+    """
+    Catch-up check for the daily pipeline. Returns needs_run=true when today's
+    content has not been generated yet, so n8n can run a missed day on wake.
+    """
+    today = date.today().isoformat()
+    exists = Path(f"{OUTPUT_DIR}/content/content_{today}.json").exists()
+    return jsonify({"ok": True, "date": today, "needs_run": not exists})
 
 
 def _parse_content_json(stdout: str) -> dict | None:
