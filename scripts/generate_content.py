@@ -14,8 +14,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
+import re
 import sys
 import time
 from datetime import date
@@ -83,16 +85,73 @@ Previously used bands (avoid): {used_bands}
 DIFFICULTY_RANK = {"easy": 0, "medium": 1, "hard": 2}
 
 
-def get_used_bands(output_dir: Path) -> list[str]:
-    """Scan past content files to avoid repeating bands."""
-    used = []
+USED_BANDS_CSV = "used_bands.csv"
+
+
+def _norm_band(name: str) -> str:
+    """Normalise a band name for duplicate comparison (case/punct/spacing-insensitive)."""
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def load_used_bands(output_dir: Path) -> list[str]:
+    """
+    Build the avoid-list from the persistent CSV log (source of truth),
+    plus any past content_*.json files still on disk (belt and suspenders).
+    Returns de-duplicated original names, most-recent last.
+    """
+    used: list[str] = []
+
+    csv_path = output_dir / USED_BANDS_CSV
+    if csv_path.exists():
+        try:
+            with open(csv_path, newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    if row.get("band"):
+                        used.append(row["band"])
+        except Exception as e:
+            log.warning("used_csv_read_failed", error=str(e))
+
     for f in output_dir.glob("content_*.json"):
         try:
             data = json.loads(f.read_text())
             used.extend(b["name"] for b in data.get("bands", []))
         except Exception:
             pass
-    return used[-40:]  # keep last 40 to stay within token budget
+
+    # De-dup preserving order
+    seen, out = set(), []
+    for n in used:
+        k = _norm_band(n)
+        if k and k not in seen:
+            seen.add(k)
+            out.append(n)
+    return out
+
+
+def log_bands_csv(output_dir: Path, date_str: str, bands: list[dict]) -> None:
+    """Append the day's chosen bands to the persistent CSV log."""
+    csv_path = output_dir / USED_BANDS_CSV
+    is_new = not csv_path.exists()
+    try:
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if is_new:
+                w.writerow(["date", "band", "difficulty"])
+            for b in bands:
+                w.writerow([date_str, b.get("name", ""), b.get("difficulty", "")])
+        log.info("bands_logged_csv", path=str(csv_path), count=len(bands))
+    except Exception as e:
+        log.warning("used_csv_write_failed", error=str(e))
+
+
+def _parse_claude_json(raw: str) -> dict:
+    """Parse Claude's JSON reply, tolerating markdown code fences."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    return json.loads(raw.strip())
 
 
 def generate_band_ideas(output_dir: Path, override_bands: list[str] | None = None) -> dict:
@@ -128,10 +187,21 @@ Return ONLY valid JSON:
 }}"""
             }],
         )
-        raw = resp.content[0].text.strip()
-    else:
-        used = get_used_bands(output_dir)
-        client = Anthropic(api_key=ANTHROPIC_KEY)
+        parsed = _parse_claude_json(resp.content[0].text)
+        bands = parsed["bands"]
+        bands.sort(key=lambda b: DIFFICULTY_RANK.get(str(b.get("difficulty", "")).lower(), 1))
+        return {
+            "bands": bands,
+            "hook": parsed.get("hook", "GUESS THE BAND"),
+            "cta": parsed.get("cta", "FOLLOW FOR DAILY PUZZLES"),
+        }
+
+    # ── Daily selection: avoid previously-used bands, retry if Claude repeats ──
+    used = load_used_bands(output_dir)
+    client = Anthropic(api_key=ANTHROPIC_KEY)
+    bands, hook, cta = [], "GUESS THE BAND", "FOLLOW FOR DAILY PUZZLES"
+
+    for attempt in range(1, 4):
         resp = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=2000,
@@ -143,23 +213,30 @@ Return ONLY valid JSON:
                 ),
             }],
         )
-        raw = resp.content[0].text.strip()
+        parsed = _parse_claude_json(resp.content[0].text)
+        bands = parsed["bands"]
+        hook = parsed.get("hook", "GUESS THE BAND")
+        cta = parsed.get("cta", "FOLLOW FOR DAILY PUZZLES")
 
-    # Strip potential markdown fences
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    parsed = json.loads(raw)
-    bands = parsed["bands"]
+        used_norm = {_norm_band(u) for u in used}
+        seen, dups = set(), []
+        for b in bands:
+            k = _norm_band(b["name"])
+            if k in used_norm or k in seen:
+                dups.append(b["name"])
+            seen.add(k)
+
+        if not dups:
+            break
+        log.warning("duplicate_bands_retry", attempt=attempt, dups=dups)
+        used = used + dups  # strengthen the avoid list for the next attempt
+    else:
+        log.warning("duplicate_bands_unresolved", names=[b["name"] for b in bands])
+
     # Sort puzzles to escalate easy -> hard across the video
     bands.sort(key=lambda b: DIFFICULTY_RANK.get(str(b.get("difficulty", "")).lower(), 1))
     log.info("bands_generated", count=len(bands), names=[b["name"] for b in bands])
-    return {
-        "bands": bands,
-        "hook": parsed.get("hook", "GUESS THE BAND"),
-        "cta": parsed.get("cta", "FOLLOW FOR DAILY PUZZLES"),
-    }
+    return {"bands": bands, "hook": hook, "cta": cta}
 
 
 def generate_image(prompt: str, band_name: str) -> str:
@@ -271,6 +348,10 @@ Return ONLY valid JSON:
     }
     content_file.write_text(json.dumps(result, indent=2))
     log.info("content_saved", path=str(content_file))
+
+    # Log the chosen bands to the persistent CSV so future runs avoid repeats
+    log_bands_csv(output_dir, today, bands)
+
     return result
 
 
