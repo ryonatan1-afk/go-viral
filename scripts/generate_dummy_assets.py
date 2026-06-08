@@ -20,8 +20,9 @@ except ImportError:
     print("Install requirements.txt first: pip install -r requirements.txt")
     raise SystemExit(1)
 
-COLORS = [(220, 50, 50), (50, 180, 220), (80, 200, 80), (200, 150, 30)]
-LABELS = ["Puzzle 1", "Puzzle 2", "Puzzle 3", "Puzzle 4"]
+COLORS = [(220, 50, 50), (50, 180, 220), (80, 200, 80), (200, 150, 30),
+          (150, 80, 200), (40, 120, 160)]
+LABELS = ["Puzzle 1", "Puzzle 2", "Puzzle 3", "Puzzle 4", "Puzzle 5", "Puzzle 6"]
 OUT_IMAGES = Path("./test_assets/images")
 OUT_AUDIO = Path("./templates/audio")
 OUT_IMAGES.mkdir(parents=True, exist_ok=True)
@@ -55,14 +56,14 @@ def make_silent_audio(filename: str, duration_ms: int = 5000) -> None:
 
 def main() -> None:
     print("Generating test images…")
-    images = [make_test_image(i) for i in range(4)]
+    images = [make_test_image(i) for i in range(6)]
 
     print("\nReady. Test run:")
     print(
         f"python scripts/generate_video.py \\\n"
         f"  --images {' '.join(images)} \\\n"
-        f"  --titles 'Riddle 1' 'Riddle 2' 'Riddle 3' 'Riddle 4' \\\n"
-        f"  --captions 'Drop your guess!' 'Comment below!' 'Can you solve it?' 'Reply now!' \\\n"
+        f"  --titles 'Riddle 1' 'Riddle 2' 'Riddle 3' 'Riddle 4' 'Riddle 5' 'Riddle 6' \\\n"
+        f"  --captions 'Drop your guess!' 'Comment below!' 'Can you solve it?' 'Reply now!' 'Name it!' 'Last one!' \\\n"
         f"  --output-dir ./output"
     )
 

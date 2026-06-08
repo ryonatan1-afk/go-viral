@@ -175,9 +175,9 @@ def _render_and_notify(image_paths, titles, captions, band_names,
             "--outro-sound", f"{TEMPLATES_DIR}/audio/outro.wav",
             "--font", f"{TEMPLATES_DIR}/fonts/bold.ttf",
         ]
-        if band_names and len(band_names) == 4:
+        if band_names and len(band_names) == len(image_paths):
             cmd += ["--band-names", *band_names]
-        if difficulties and len(difficulties) == 4:
+        if difficulties and len(difficulties) == len(image_paths):
             cmd += ["--difficulties", *difficulties]
         if hook:
             cmd += ["--hook", hook]

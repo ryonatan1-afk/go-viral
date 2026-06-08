@@ -1,7 +1,7 @@
 """
 generate_content.py
 ===================
-Daily content brain: uses Claude to invent 4 band-name visual puzzles,
+Daily content brain: uses Claude to invent 6 band-name visual puzzles,
 then generates images for each via fal.ai FLUX.1[dev].
 
 Outputs a JSON file (content_YYYY-MM-DD.json) consumed by the n8n workflow.
@@ -47,18 +47,18 @@ IMAGE_HEIGHT = 1024
 
 BAND_PROMPT = """\
 You are a creative director for a viral social media account called "Guess the Band".
-Each day you pick 4 rock/pop bands whose names can be depicted as a literal visual scene.
+Each day you pick 6 rock/pop bands whose names can be depicted as a literal visual scene.
 
 Rules:
 - Choose bands with visually punnable names (e.g. Radiohead, The Beatles, Gorillaz, Imagine Dragons, Arctic Monkeys, Red Hot Chili Peppers, Foo Fighters, Green Day, Nine Inch Nails, Pearl Jam, Stone Temple Pilots, Soundgarden, Smashing Pumpkins, The Killers, Queens of the Stone Age, System of a Down, Alice in Chains, Black Sabbath, Iron Maiden, Judas Priest, Guns N Roses, Def Leppard, White Stripes, Black Keys, etc.)
 - Avoid bands used in previous sessions if possible
-- Mix difficulty: 2 easy (mainstream), 1 medium, 1 hard
+- Mix difficulty across the 6 bands: 2 easy (mainstream), 1 medium, 3 hard
 
 ON-SCREEN TEXT RULES (critical — text is rendered in a bold condensed font):
 - NO emoji and NO special symbols anywhere. Plain ASCII letters/numbers only.
 - riddle_title: SHORT and punchy, max ~18 characters, uppercase friendly (e.g. "WHAT BAND IS THIS?", "NAME THIS BAND", "GUESS IT").
 - engagement_caption: SHORT, max ~22 characters (e.g. "COMMENT YOUR GUESS", "DROP YOUR ANSWER").
-- hook: ONE short scroll-stopping line for the intro card, max ~24 characters (e.g. "99% CANT GET ALL 4", "ONLY REAL FANS WIN").
+- hook: ONE short scroll-stopping line for the intro card, max ~24 characters (e.g. "99% CANT GET ALL 6", "ONLY REAL FANS WIN").
 - cta: ONE short outro line, max ~28 characters (e.g. "FOLLOW FOR DAILY PUZZLES").
 
 Return ONLY valid JSON, no markdown, no explanation:

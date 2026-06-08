@@ -1,11 +1,11 @@
 # Go-Viral — Project Context
 
 ## What this is
-Autonomous daily pipeline that generates "Guess the Band" visual puzzle videos for TikTok/Reels (61s) and YouTube Shorts (59s). Each video has 4 slides showing a literal visual pun of a band name (e.g. a man with a radio for a head = Radiohead).
+Autonomous daily pipeline that generates "Guess the Band" visual puzzle videos for TikTok/Reels (~62s) and YouTube Shorts (59s). Each video has 6 slides showing a literal visual pun of a band name (e.g. a man with a radio for a head = Radiohead). The ~62s length intentionally clears TikTok's 60s monetization minimum.
 
 ## Stack
 - **Python 3.14** (local), **Python 3.11** (Docker worker)
-- **ffmpeg 8.1.1** — video engine (zoompan Ken Burns, drawtext overlays, H.264 encode). moviepy was REMOVED — too slow (48min renders). ffmpeg renders all 4 slides in parallel via subprocess, ~2.5min total.
+- **ffmpeg 8.1.1** — video engine (zoompan Ken Burns, drawtext overlays, H.264 encode). moviepy was REMOVED — too slow (48min renders). ffmpeg renders all 6 slides in parallel via subprocess, ~2.5min total.
 - **fal.ai FLUX.1[dev]** — image generation (~$0.003/image)
 - **Claude claude-sonnet-4-6** — band selection + image prompt generation
 - **n8n** (self-hosted, Docker) — workflow orchestration, daily cron
@@ -27,7 +27,7 @@ Autonomous daily pipeline that generates "Guess the Band" visual puzzle videos f
 | `.env` | Secrets — never commit |
 
 ## Output
-- `output/tiktok_reels.mp4` — ~**54s**: animated hook → 4×(puzzle 10s + reveal 2.5s) → outro, all crossfaded (xfade)
+- `output/tiktok_reels.mp4` — ~**62s**: animated hook → 6×(puzzle 8s + reveal 2s) → outro, all crossfaded (xfade). Band count is dynamic (driven by `len(images)` in `generate_video.py`), not hardcoded.
 - **YouTube Shorts is DISABLED** (commented out in `PLATFORM_CONFIGS` in `generate_video.py` + dropped from the upload list in `api.py`). Re-enable both spots when ready.
 - `output/content/content_YYYY-MM-DD.json` — daily generated content cache
 - `output/content/used_bands.csv` — persistent band-dedup log (date,band,difficulty)
@@ -42,7 +42,7 @@ Autonomous daily pipeline that generates "Guess the Band" visual puzzle videos f
 ## Daily pipeline flow
 ```
 catch-up trigger (every 15m, 09:00-22:45) → GET worker:8080/needs-run
-→ if today's content missing → Claude picks 4 bands (avoids used_bands.csv) → fal.ai generates 4 images
+→ if today's content missing → Claude picks 6 bands (avoids used_bands.csv) → fal.ai generates 6 images
 → Telegram preview sent (Approve/Regen buttons) → pipeline PAUSES (n8n Wait node)
 → user taps ✅ Approve → resume → ffmpeg renders tiktok_reels.mp4 (~3.5min)
 → worker background thread sends video directly to Telegram

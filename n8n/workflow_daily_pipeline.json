@@ -28,7 +28,7 @@
 
     {
       "parameters": {
-        "jsCode": "const data = $input.first().json;\nif (!data.ok) throw new Error('generate-content failed: ' + (data.error || JSON.stringify(data)));\nif (!data.bands || data.bands.length !== 4) throw new Error('Expected 4 bands, got: ' + JSON.stringify(data));\nreturn [{ json: data }];"
+        "jsCode": "const data = $input.first().json;\nif (!data.ok) throw new Error('generate-content failed: ' + (data.error || JSON.stringify(data)));\nif (!data.bands || data.bands.length !== 6) throw new Error('Expected 6 bands, got: ' + JSON.stringify(data));\nreturn [{ json: data }];"
       },
       "id": "parse-content",
       "name": "Parse Content",

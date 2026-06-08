@@ -3,8 +3,8 @@ telegram_bot.py
 ===============
 Lightweight Telegram approval bot for the human-in-the-loop review step.
 
-Sends 4 generated band-puzzle images to a Telegram chat with inline buttons:
-  [✅ Approve & Render] [🔄 Regen #1] [🔄 Regen #2] [🔄 Regen #3] [🔄 Regen #4]
+Sends the generated band-puzzle images to a Telegram chat with inline buttons:
+  [✅ Approve & Render] then one [🔄 Regen #N] per band (2 per row).
 
 On approval, POSTs to the n8n resume webhook to continue the paused execution.
 On regenerate, calls back to n8n with the band index to regen.
@@ -94,22 +94,22 @@ def send_preview(content_file: str, resume_url: str, chat_id: str) -> None:
 
     approval_text = (
         f"<b>🎸 Daily Band Puzzles — {date_key}</b>\n\n"
-        f"Review the 4 images above.\n"
+        f"Review the {len(bands)} images above.\n"
         f"Answers (tap to reveal):\n{band_names_preview}\n\n"
         f"Approve to start rendering, or pick an image to regenerate."
     )
 
+    # One regen button per band, laid out 2 per row (handles any band count).
+    regen_buttons = [
+        {"text": f"🔄 Regen #{i + 1}", "callback_data": f"regen|{date_key}|{i}"}
+        for i in range(len(bands))
+    ]
+    regen_rows = [regen_buttons[j:j + 2] for j in range(0, len(regen_buttons), 2)]
+
     markup = {
         "inline_keyboard": [
             [{"text": "✅ Approve & Render", "callback_data": f"approve|{date_key}"}],
-            [
-                {"text": "🔄 Regen #1", "callback_data": f"regen|{date_key}|0"},
-                {"text": "🔄 Regen #2", "callback_data": f"regen|{date_key}|1"},
-            ],
-            [
-                {"text": "🔄 Regen #3", "callback_data": f"regen|{date_key}|2"},
-                {"text": "🔄 Regen #4", "callback_data": f"regen|{date_key}|3"},
-            ],
+            *regen_rows,
         ]
     }
     send_message(chat_id, approval_text, reply_markup=markup)

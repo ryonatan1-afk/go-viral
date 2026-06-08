@@ -18,7 +18,8 @@ services:
       - EXECUTIONS_DATA_SAVE_ON_ERROR=all
       - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
       - N8N_LOG_LEVEL=info
-      - GENERIC_TIMEZONE=${TZ:-America/New_York}
+      - GENERIC_TIMEZONE=${TZ:-Asia/Jerusalem}
+      - TZ=${TZ:-Asia/Jerusalem}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}

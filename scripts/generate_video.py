@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -54,9 +55,11 @@ PLATFORM_CONFIGS = {
 
 # ── Timeline (seconds) ──
 HOOK_DUR    = 3.0
-PUZZLE_DUR  = 10.0
-REVEAL_DUR  = 2.5
+PUZZLE_DUR  = 8.0          # snappier than the old 10s; 6 bands keeps tempo high
+REVEAL_DUR  = 2.0
 OUTRO_DUR   = 4.5
+# 6 bands → 3 + 6*(8+2) + 4.5 - 0.4*13 xfade ≈ 62.3s (clears TikTok's 60s
+# monetization minimum). Band count is driven dynamically by len(images).
 XFADE       = 0.4          # crossfade duration between segments
 TRANSITION  = "fade"       # xfade type (reliable soft cut; not a hard cut)
 
@@ -103,18 +106,21 @@ class VideoPayload:
     platforms:    list[str] = field(default_factory=lambda: list(PLATFORM_CONFIGS.keys()))
 
     def __post_init__(self) -> None:
-        # Normalise list lengths to 4 so optional fields never crash the render.
+        # Normalise optional list lengths to the image count so they never
+        # crash the render. Band count is driven entirely by len(images).
+        n = len(self.images)
         if not self.band_names:
-            self.band_names = ["" for _ in range(4)]
+            self.band_names = ["" for _ in range(n)]
         if not self.difficulties:
-            self.difficulties = ["" for _ in range(4)]
-        self.band_names = (self.band_names + [""] * 4)[:4]
-        self.difficulties = (self.difficulties + [""] * 4)[:4]
+            self.difficulties = ["" for _ in range(n)]
+        self.band_names = (self.band_names + [""] * n)[:n]
+        self.difficulties = (self.difficulties + [""] * n)[:n]
 
     def validate(self) -> None:
-        assert len(self.images) == 4,   "Need exactly 4 images"
-        assert len(self.titles) == 4,   "Need exactly 4 titles"
-        assert len(self.captions) == 4, "Need exactly 4 captions"
+        n = len(self.images)
+        assert n >= 1,                  "Need at least 1 image"
+        assert len(self.titles) == n,   f"Need {n} titles to match images"
+        assert len(self.captions) == n, f"Need {n} captions to match images"
         for p in self.images:
             if not Path(p).exists():
                 raise FileNotFoundError(f"Image not found: {p}")
@@ -202,16 +208,25 @@ def build_hook_cmd(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
     out = str(tmp / "00_hook.mp4")
     fe = _font_esc(p.font_path)
 
-    # 2x2 blurred collage of the four puzzle images as the background.
+    # Blurred N-image collage (2 columns) as the hook background.
+    # 4 images → 2x2, 6 images → 2x3. Cells are sized to tile the full canvas.
+    n = len(p.images)
+    cols = 2
+    rows = math.ceil(n / cols)
+    cell_w = CANVAS_W // cols
+    cell_h = CANVAS_H // rows
     steps = []
-    for i in range(4):
+    for i in range(n):
         steps.append(
-            f"[{i}:v]scale=540:960:force_original_aspect_ratio=increase,"
-            f"crop=540:960,setsar=1[q{i}]"
+            f"[{i}:v]scale={cell_w}:{cell_h}:force_original_aspect_ratio=increase,"
+            f"crop={cell_w}:{cell_h},setsar=1[q{i}]"
         )
-    steps.append("[q0][q1]hstack=inputs=2[top]")
-    steps.append("[q2][q3]hstack=inputs=2[bot]")
-    steps.append("[top][bot]vstack=inputs=2[grid]")
+    row_labels = []
+    for r in range(rows):
+        cells = [f"[q{r * cols + c}]" for c in range(cols) if r * cols + c < n]
+        steps.append(f"{''.join(cells)}hstack=inputs={len(cells)}[row{r}]")
+        row_labels.append(f"[row{r}]")
+    steps.append(f"{''.join(row_labels)}vstack=inputs={rows}[grid]")
     steps.append(
         f"[grid]boxblur=24:2,eq=brightness=-0.28:saturation=1.05,"
         f"scale={CANVAS_W}:{CANVAS_H},setsar=1[bg]"
@@ -219,7 +234,7 @@ def build_hook_cmd(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
 
     brand = "GUESS THE BAND"
     hook = sanitize_text(p.hook) or brand
-    sub = "CAN YOU NAME ALL 4?"
+    sub = f"CAN YOU NAME ALL {len(p.images)}?"
 
     prev = "bg"
 
@@ -260,7 +275,7 @@ def build_hook_cmd(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
 
     fc = ";".join(steps)
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning"]
-    for i in range(4):
+    for i in range(len(p.images)):
         cmd += ["-loop", "1", "-framerate", str(FPS), "-t", str(HOOK_DUR), "-i", p.images[i]]
     cmd += ["-filter_complex", fc, "-map", f"[{prev}]", "-t", str(HOOK_DUR),
             "-r", str(FPS), "-c:v", "libx264", "-preset", "fast", "-crf", "23",
@@ -468,8 +483,10 @@ def mux_audio(video_in: str, out_path: str, p: VideoPayload, durs: list[float]) 
         return
 
     starts, total = _segment_starts(durs)
-    puzzle_idxs = [1, 3, 5, 7]            # slide entrances in the fixed layout
-    reveal_idxs = [2, 4, 6, 8]            # reveal segments in the fixed layout
+    # Layout: [hook] + N*(puzzle, reveal) + [outro]. Derive event slots from N.
+    n_bands = (len(durs) - 2) // 2
+    puzzle_idxs = [1 + 2 * i for i in range(n_bands)]   # slide entrances
+    reveal_idxs = [2 + 2 * i for i in range(n_bands)]   # reveal segments
     outro_idx = len(durs) - 1
 
     events: list[tuple[str, float, float]] = []
@@ -526,7 +543,7 @@ def render_platform(payload: VideoPayload, platform: str) -> str:
     try:
         # Build all segment commands in timeline order.
         builders: list[tuple[str, list[str], float]] = [build_hook_cmd(payload, tmp_dir)]
-        for i in range(4):
+        for i in range(len(payload.images)):
             builders.append(build_puzzle_cmd(payload, i, tmp_dir))
             builders.append(build_reveal_cmd(payload, i, tmp_dir))
         builders.append(build_outro_cmd(payload, tmp_dir))
@@ -578,11 +595,11 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--json-stdin", action="store_true")
     p.add_argument("--json-file")
-    p.add_argument("--images",       nargs=4)
-    p.add_argument("--titles",       nargs=4)
-    p.add_argument("--captions",     nargs=4)
-    p.add_argument("--band-names",   nargs=4, dest="band_names")
-    p.add_argument("--difficulties", nargs=4)
+    p.add_argument("--images",       nargs="+")
+    p.add_argument("--titles",       nargs="+")
+    p.add_argument("--captions",     nargs="+")
+    p.add_argument("--band-names",   nargs="+", dest="band_names")
+    p.add_argument("--difficulties", nargs="+")
     p.add_argument("--hook",         default="GUESS THE BAND")
     p.add_argument("--cta",          default="FOLLOW FOR DAILY PUZZLES")
     p.add_argument("--output-dir",   default="./output")
