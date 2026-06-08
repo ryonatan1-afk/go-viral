@@ -56,6 +56,7 @@ Note: exact 09:00 trigger is DISABLED; the 15-min catch-up covers 09:00 and reco
 - ngrok tunnel: https://cheatingly-aedilitian-chi.ngrok-free.dev (changes on restart)
 - Telegram webhook: registered at `/webhook/telegram-callback` on n8n
 - n8n MCP server registered at user scope: `http://localhost:5678/mcp-server/http`
+- **n8n footgun:** editing a workflow via the MCP `update_workflow` only changes the *draft*. The live catch-up cron runs the *published* version — you MUST call `publish_workflow` (or Publish in the UI) or your change silently does nothing.
 
 ## Known compatibility fixes applied
 - `audioop-lts` required for pydub on Python 3.14
