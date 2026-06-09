@@ -172,6 +172,7 @@ def _render_and_notify(image_paths, titles, captions, band_names,
             "--ding-sound", f"{TEMPLATES_DIR}/audio/ding.wav",
             "--whoosh-sound", f"{TEMPLATES_DIR}/audio/whoosh.wav",
             "--scratch-sound", f"{TEMPLATES_DIR}/audio/scratch.wav",
+            "--sting-sound", f"{TEMPLATES_DIR}/audio/sting.wav",
             "--outro-sound", f"{TEMPLATES_DIR}/audio/outro.wav",
             "--font", f"{TEMPLATES_DIR}/fonts/bold.ttf",
         ]

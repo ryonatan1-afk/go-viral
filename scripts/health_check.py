@@ -8,17 +8,26 @@ Exits 0 if healthy, 1 if anything critical is missing.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+# Resolve assets relative to TEMPLATES_DIR (worker mounts at /templates); fall back
+# to ./templates for local runs from the repo root.
+TEMPLATES_DIR = os.getenv("TEMPLATES_DIR", "./templates")
+
 REQUIRED_AUDIO = [
-    "./templates/audio/tick.mp3",
-    "./templates/audio/outro.mp3",
+    f"{TEMPLATES_DIR}/audio/beat.wav",
+    f"{TEMPLATES_DIR}/audio/ding.wav",
+    f"{TEMPLATES_DIR}/audio/whoosh.wav",
+    f"{TEMPLATES_DIR}/audio/scratch.wav",
+    f"{TEMPLATES_DIR}/audio/sting.wav",
+    f"{TEMPLATES_DIR}/audio/outro.wav",
 ]
-REQUIRED_FONT = "./templates/fonts/bold.ttf"
-OUTPUT_DIR = "./output"
+REQUIRED_FONT = f"{TEMPLATES_DIR}/fonts/bold.ttf"
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./output")
 
 
 def check_ffmpeg() -> dict:

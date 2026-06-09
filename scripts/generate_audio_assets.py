@@ -238,6 +238,40 @@ def make_scratch(duration_s: float = 0.5) -> np.ndarray:
     return scratch
 
 
+# ── hook sting ────────────────────────────────────────────────────────────────
+
+def make_sting(duration_s: float = 0.5) -> np.ndarray:
+    """
+    First-frame attention sting: a fast rising pitch sweep (riser) layered over a
+    punchy low sub-bass impact. Front-loaded energy to grab the scroll in <1s.
+    """
+    sr = SAMPLE_RATE
+    n = int(sr * duration_s)
+    t = np.linspace(0, duration_s, n, endpoint=False)
+
+    # Riser: noise + upward pitch sweep, swelling toward the end (reuses whoosh idiom).
+    env_rise = np.linspace(0, 1, n) ** 2                       # accelerating swell
+    noise = (np.random.random(n) * 2 - 1) * 0.4
+    sweep = np.sin(2 * math.pi * (300 + 2200 * (t / duration_s)) * t) * 0.30
+    riser = (noise + sweep) * env_rise
+
+    # Sub-bass impact at the front: pitch-swept kick (reuses make_beat idiom).
+    kd = int(min(0.22, duration_s) * sr)
+    tk = np.linspace(0, kd / sr, kd, endpoint=False)
+    freq = 50 + 80 * np.exp(-tk * 26)
+    phase = 2 * math.pi * np.cumsum(freq) / sr
+    impact = np.zeros(n)
+    impact[:kd] = np.sin(phase) * np.exp(-tk * 14) * 1.0
+
+    sting = riser + impact
+    sting = envelope(sting, attack_s=0.005, release_s=0.06, sr=sr)
+    peak = np.max(np.abs(sting))
+    if peak > 0:
+        sting /= peak
+    sting *= 0.9
+    return sting
+
+
 # ── fun outro jingle ──────────────────────────────────────────────────────────
 
 def make_outro_jingle(duration_s: float = 3.0) -> np.ndarray:
@@ -291,6 +325,7 @@ def main() -> None:
         ("ding.wav",    lambda: make_ding(0.6)),
         ("whoosh.wav",  lambda: make_whoosh(0.45)),
         ("scratch.wav", lambda: make_scratch(0.5)),
+        ("sting.wav",   lambda: make_sting(0.5)),
     ]
     for name, gen in assets:
         path = OUT / name

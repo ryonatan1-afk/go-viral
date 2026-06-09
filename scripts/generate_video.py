@@ -54,14 +54,18 @@ PLATFORM_CONFIGS = {
 }
 
 # ── Timeline (seconds) ──
-HOOK_DUR    = 3.0
+HOOK_DUR    = 3.5          # kinetic stakes-UI hook needs room for the game UI to land
 PUZZLE_DUR  = 8.0          # snappier than the old 10s; 6 bands keeps tempo high
 REVEAL_DUR  = 2.0
 OUTRO_DUR   = 4.5
-# 6 bands → 3 + 6*(8+2) + 4.5 - 0.4*13 xfade ≈ 62.3s (clears TikTok's 60s
+# 6 bands → 3.5 + 6*(8+2) + 4.5 - 0.4*13 xfade ≈ 62.8s (clears TikTok's 60s
 # monetization minimum). Band count is driven dynamically by len(images).
 XFADE       = 0.4          # crossfade duration between segments
 TRANSITION  = "fade"       # xfade type (reliable soft cut; not a hard cut)
+
+# Hook variant: "kinetic" (default, game-UI + motion) | "classic" (legacy static text).
+# A/B by setting HOOK_VARIANT in the environment; measure 3-second view rate.
+HOOK_VARIANT = os.environ.get("HOOK_VARIANT", "kinetic").lower()
 
 COUNTDOWN_N = 3            # show 3-2-1 in the last N seconds of each puzzle
 ZOOM_FACTOR = 1.12         # Ken Burns end scale
@@ -99,6 +103,7 @@ class VideoPayload:
     ding_sound:   str = "./templates/audio/ding.wav"
     whoosh_sound: str = "./templates/audio/whoosh.wav"
     scratch_sound: str = "./templates/audio/scratch.wav"
+    sting_sound:  str = "./templates/audio/sting.wav"
     outro_sound:  str = "./templates/audio/outro.wav"
     tick_sound:   str = "./templates/audio/tick.wav"   # legacy, unused
     font_path:    str = "./templates/fonts/bold.ttf"
@@ -204,12 +209,10 @@ def _run_ffmpeg(cmd: list[str], what: str) -> None:
 
 # ── Segment builders (each returns (out_path, cmd, duration)) ──────────────────
 
-def build_hook_cmd(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
-    out = str(tmp / "00_hook.mp4")
-    fe = _font_esc(p.font_path)
-
-    # Blurred N-image collage (2 columns) as the hook background.
-    # 4 images → 2x2, 6 images → 2x3. Cells are sized to tile the full canvas.
+def _hook_bg(p: VideoPayload) -> tuple[list[str], str]:
+    """Shared blurred N-image collage background for every hook variant.
+    4 images → 2x2, 6 images → 2x3. Cells tile the full canvas. Returns
+    (filter steps, last label = "bg")."""
     n = len(p.images)
     cols = 2
     rows = math.ceil(n / cols)
@@ -231,12 +234,30 @@ def build_hook_cmd(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
         f"[grid]boxblur=24:2,eq=brightness=-0.28:saturation=1.05,"
         f"scale={CANVAS_W}:{CANVAS_H},setsar=1[bg]"
     )
+    return steps, "bg"
+
+
+def _finish_hook(steps: list[str], prev: str, p: VideoPayload, out: str) -> list[str]:
+    """Shared ffmpeg command tail: N looped image inputs → filtergraph → silent mp4."""
+    fc = ";".join(steps)
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning"]
+    for i in range(len(p.images)):
+        cmd += ["-loop", "1", "-framerate", str(FPS), "-t", str(HOOK_DUR), "-i", p.images[i]]
+    cmd += ["-filter_complex", fc, "-map", f"[{prev}]", "-t", str(HOOK_DUR),
+            "-r", str(FPS), "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-pix_fmt", "yuv420p", "-an", out]
+    return cmd
+
+
+def build_hook_classic(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
+    """Legacy hook: three static text reveals over the blurred collage. A/B control."""
+    out = str(tmp / "00_hook.mp4")
+    fe = _font_esc(p.font_path)
+    steps, prev = _hook_bg(p)
 
     brand = "GUESS THE BAND"
     hook = sanitize_text(p.hook) or brand
     sub = f"CAN YOU NAME ALL {len(p.images)}?"
-
-    prev = "bg"
 
     # Line 1 (brand): drops in from above + fades in.
     bsize = fit_fontsize(brand, 80, 56)
@@ -273,14 +294,100 @@ def build_hook_cmd(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
     ))
     prev = "hk2"
 
-    fc = ";".join(steps)
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "warning"]
-    for i in range(len(p.images)):
-        cmd += ["-loop", "1", "-framerate", str(FPS), "-t", str(HOOK_DUR), "-i", p.images[i]]
-    cmd += ["-filter_complex", fc, "-map", f"[{prev}]", "-t", str(HOOK_DUR),
-            "-r", str(FPS), "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-            "-pix_fmt", "yuv420p", "-an", out]
-    return out, cmd, HOOK_DUR
+    return out, _finish_hook(steps, prev, p, out), HOOK_DUR
+
+
+def build_hook_kinetic(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
+    """Idea #5 — kinetic stakes-UI hook: word-by-word pops + live game UI (score
+    counter, difficulty meter, draining timer) so the open loop is *visible* in 1s."""
+    out = str(tmp / "00_hook.mp4")
+    fe = _font_esc(p.font_path)
+    steps, prev = _hook_bg(p)
+    n = len(p.images)
+
+    # ── Top game UI ──
+    # Score counter chip (top-left): "0/N" — pops in immediately. Static text (no %).
+    score = f"0/{n}"
+    steps.append(f"[{prev}]drawbox=x=40:y=70:w=190:h=84:color=black@0.55:t=fill[sc0]")
+    steps.append(_drawtext(
+        "sc0", "sc1", fe, score, 60, "0x64DCFF",
+        x="135-text_w/2", y="86", alpha=_fade_in(0.25), box=None,
+    ))
+    prev = "sc1"
+
+    # Difficulty meter (top, segmented bar): one cell per band, colored by difficulty,
+    # revealing left→right. Reuses the puzzle progress-bar drawbox idiom.
+    seg_total = CANVAS_W - 320
+    seg_gap = 12
+    seg_w = (seg_total - seg_gap * (n - 1)) // n
+    seg_x0 = 280
+    for i in range(n):
+        diff = sanitize_text(p.difficulties[i]).lower()
+        col = DIFF_COLORS.get(diff, "0x888888")
+        sx = seg_x0 + i * (seg_w + seg_gap)
+        reveal = 0.15 + i * 0.10   # staggered left→right reveal
+        steps.append(
+            f"[{prev}]drawbox=x={sx}:y=96:w={seg_w}:h=30:color={col}:t=fill:"
+            f"enable='gte(t\\,{reveal:.2f})'[dm{i}]"
+        )
+        prev = f"dm{i}"
+
+    # ── Kinetic hook line (word-by-word vertical pops, centered) ──
+    hook = sanitize_text(p.hook) or "GUESS THE BAND"
+    words = hook.split()
+    if 1 <= len(words) <= 7:
+        line_h = 150
+        block_h = line_h * len(words)
+        y0 = (CANVAS_H - block_h) // 2 - 60
+        for i, w in enumerate(words):
+            wsize = fit_fontsize(w, 150, 80)
+            delay = i * 0.12                       # ~beat-synced stagger (100bpm)
+            scale = f"{wsize}*(1-exp(-max(0\\,t-{delay:.2f})*18))"
+            steps.append(_drawtext(
+                prev, f"kw{i}", fe, w, scale, "white",
+                x="(w-text_w)/2", y=str(y0 + i * line_h),
+                alpha=_fade_in(0.18, delay=delay), box="black@0.45", boxborderw=26,
+            ))
+            prev = f"kw{i}"
+    else:
+        # Long/empty hook → single whole-line scale-pop fallback.
+        hsize = fit_fontsize(hook, 120, 60)
+        steps.append(_drawtext(
+            prev, "kwl", fe, hook, f"{hsize}*(1-exp(-t*16))", "white",
+            x="(w-text_w)/2", y="820", alpha=_fade_in(0.22),
+            box="black@0.50", boxborderw=30,
+        ))
+        prev = "kwl"
+
+    # ── Draining timer bar (the visible "open loop": time is running) ──
+    # Bar, not a counting number — live numeric text needs %{eif} expansion and
+    # `%` is stripped/escaped per the drawtext footgun. Geometry-only is reliable.
+    barw = CANVAS_W - 160
+    steps.append(f"[{prev}]drawbox=x=80:y=1560:w={barw}:h=22:color=white@0.20:t=fill[tb0]")
+    steps.append(
+        f"[tb0]drawbox=x=80:y=1560:w='{barw}*max(0\\,1-t/{HOOK_DUR})':h=22:"
+        f"color=0xE74C3C:t=fill[tb1]"
+    )
+    prev = "tb1"
+
+    # Sub line below the timer — reinforces the challenge.
+    sub = f"CAN YOU NAME ALL {n}?"
+    ssize = fit_fontsize(sub, 80, 50)
+    steps.append(_drawtext(
+        prev, "ksub", fe, sub, ssize, "yellow",
+        x="(w-text_w)/2", y="1620", alpha=_fade_in(0.35, delay=0.30),
+        box="black@0.45",
+    ))
+    prev = "ksub"
+
+    return out, _finish_hook(steps, prev, p, out), HOOK_DUR
+
+
+def build_hook_cmd(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
+    """Dispatch to the configured HOOK_VARIANT (defaults to kinetic)."""
+    builder = {"classic": build_hook_classic,
+               "kinetic": build_hook_kinetic}.get(HOOK_VARIANT, build_hook_kinetic)
+    return builder(p, tmp)
 
 
 def build_puzzle_cmd(p: VideoPayload, i: int, tmp: Path) -> tuple[str, list[str], float]:
@@ -490,6 +597,9 @@ def mux_audio(video_in: str, out_path: str, p: VideoPayload, durs: list[float]) 
     outro_idx = len(durs) - 1
 
     events: list[tuple[str, float, float]] = []
+    # First-frame attention sting under the hook — sound is half the hook on TikTok.
+    if Path(p.sting_sound).exists():
+        events.append((p.sting_sound, 0.0, 0.9))
     # Record scratch when each new slide comes in
     for idx in puzzle_idxs:
         if idx < len(durs) and Path(p.scratch_sound).exists():
@@ -532,7 +642,7 @@ def mux_audio(video_in: str, out_path: str, p: VideoPayload, durs: list[float]) 
 def render_platform(payload: VideoPayload, platform: str) -> str:
     cfg = PLATFORM_CONFIGS[platform]
     out_path = str(Path(payload.output_dir) / cfg["filename"])
-    log.info("render_start", platform=platform)
+    log.info("render_start", platform=platform, hook_variant=HOOK_VARIANT)
     t0 = time.time()
 
     tmp_dir = Path(payload.output_dir) / f"_tmp_{platform}"
@@ -607,6 +717,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ding-sound",   default="./templates/audio/ding.wav",   dest="ding_sound")
     p.add_argument("--whoosh-sound", default="./templates/audio/whoosh.wav", dest="whoosh_sound")
     p.add_argument("--scratch-sound", default="./templates/audio/scratch.wav", dest="scratch_sound")
+    p.add_argument("--sting-sound",  default="./templates/audio/sting.wav",  dest="sting_sound")
     p.add_argument("--outro-sound",  default="./templates/audio/outro.wav",  dest="outro_sound")
     p.add_argument("--font",         default="./templates/fonts/bold.ttf",   dest="font_path")
     p.add_argument("--webhook-url",  default=None)
@@ -630,7 +741,7 @@ def build_payload(args: argparse.Namespace) -> VideoPayload:
             hook=args.hook, cta=args.cta, output_dir=args.output_dir,
             beat_sound=args.beat_sound, ding_sound=args.ding_sound,
             whoosh_sound=args.whoosh_sound, scratch_sound=args.scratch_sound,
-            outro_sound=args.outro_sound,
+            sting_sound=args.sting_sound, outro_sound=args.outro_sound,
             font_path=args.font_path, webhook_url=args.webhook_url,
             platforms=args.platforms,
         )
