@@ -105,6 +105,7 @@ class VideoPayload:
     scratch_sound: str = "./templates/audio/scratch.wav"
     sting_sound:  str = "./templates/audio/sting.wav"
     outro_sound:  str = "./templates/audio/outro.wav"
+    hook_variant: str = HOOK_VARIANT
     tick_sound:   str = "./templates/audio/tick.wav"   # legacy, unused
     font_path:    str = "./templates/fonts/bold.ttf"
     webhook_url:  Optional[str] = None
@@ -384,9 +385,9 @@ def build_hook_kinetic(p: VideoPayload, tmp: Path) -> tuple[str, list[str], floa
 
 
 def build_hook_cmd(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
-    """Dispatch to the configured HOOK_VARIANT (defaults to kinetic)."""
+    """Dispatch to the payload's hook_variant (defaults to kinetic)."""
     builder = {"classic": build_hook_classic,
-               "kinetic": build_hook_kinetic}.get(HOOK_VARIANT, build_hook_kinetic)
+               "kinetic": build_hook_kinetic}.get(p.hook_variant, build_hook_kinetic)
     return builder(p, tmp)
 
 
@@ -642,7 +643,7 @@ def mux_audio(video_in: str, out_path: str, p: VideoPayload, durs: list[float]) 
 def render_platform(payload: VideoPayload, platform: str) -> str:
     cfg = PLATFORM_CONFIGS[platform]
     out_path = str(Path(payload.output_dir) / cfg["filename"])
-    log.info("render_start", platform=platform, hook_variant=HOOK_VARIANT)
+    log.info("render_start", platform=platform, hook_variant=payload.hook_variant)
     t0 = time.time()
 
     tmp_dir = Path(payload.output_dir) / f"_tmp_{platform}"
@@ -719,6 +720,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--scratch-sound", default="./templates/audio/scratch.wav", dest="scratch_sound")
     p.add_argument("--sting-sound",  default="./templates/audio/sting.wav",  dest="sting_sound")
     p.add_argument("--outro-sound",  default="./templates/audio/outro.wav",  dest="outro_sound")
+    p.add_argument("--hook-variant", default=HOOK_VARIANT, dest="hook_variant")
     p.add_argument("--font",         default="./templates/fonts/bold.ttf",   dest="font_path")
     p.add_argument("--webhook-url",  default=None)
     p.add_argument("--platforms",    nargs="+", default=list(PLATFORM_CONFIGS.keys()),
@@ -742,6 +744,7 @@ def build_payload(args: argparse.Namespace) -> VideoPayload:
             beat_sound=args.beat_sound, ding_sound=args.ding_sound,
             whoosh_sound=args.whoosh_sound, scratch_sound=args.scratch_sound,
             sting_sound=args.sting_sound, outro_sound=args.outro_sound,
+            hook_variant=args.hook_variant,
             font_path=args.font_path, webhook_url=args.webhook_url,
             platforms=args.platforms,
         )

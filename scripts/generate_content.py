@@ -28,6 +28,8 @@ import structlog
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+import experiment
+
 load_dotenv(override=True)
 log = structlog.get_logger(__name__)
 
@@ -335,10 +337,14 @@ Return ONLY valid JSON:
         band["image_path"] = str(img_path)
         band["image_index"] = i + 1
 
+    # Assign today's hook variant for the A/B loop (idempotent per date).
+    hook_variant = experiment.assign_variant(output_dir, today)
+
     result = {
         "date": today,
         "hook": ideas["hook"],
         "cta": ideas["cta"],
+        "hook_variant": hook_variant,
         "bands": bands,
         "image_paths": [b["image_path"] for b in bands],
         "titles": [b["riddle_title"] for b in bands],

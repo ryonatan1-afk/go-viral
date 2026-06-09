@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date
@@ -156,7 +157,7 @@ def send_preview():
 
 
 def _render_and_notify(image_paths, titles, captions, band_names,
-                       difficulties=None, hook=None, cta=None):
+                       difficulties=None, hook=None, cta=None, hook_variant=None):
     """Run render in background thread, then send Telegram notification."""
     import threading
     import requests as req_lib
@@ -184,6 +185,8 @@ def _render_and_notify(image_paths, titles, captions, band_names,
             cmd += ["--hook", hook]
         if cta:
             cmd += ["--cta", cta]
+        if hook_variant:
+            cmd += ["--hook-variant", hook_variant]
         result = _run(cmd, timeout=600)
         bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
         chat_id = os.environ["TELEGRAM_CHAT_ID"]
@@ -231,10 +234,140 @@ def render_videos():
     difficulties = body.get("difficulties")
     hook = body.get("hook")
     cta = body.get("cta")
+    hook_variant = body.get("hook_variant") or _variant_from_content(image_paths)
 
     _render_and_notify(image_paths, titles, captions, band_names,
-                       difficulties=difficulties, hook=hook, cta=cta)
-    return jsonify({"ok": True, "status": "rendering_started"})
+                       difficulties=difficulties, hook=hook, cta=cta,
+                       hook_variant=hook_variant)
+    return jsonify({"ok": True, "status": "rendering_started", "hook_variant": hook_variant})
+
+
+def _variant_from_content(image_paths: list[str]) -> str | None:
+    """Read the hook_variant stamped into content_<date>.json (source of truth).
+    Date is parsed from the image filename (e.g. .../2026-06-09_band_1.png)."""
+    for p in image_paths:
+        m = re.search(r"(\d{4}-\d{2}-\d{2})", str(p))
+        if not m:
+            continue
+        cf = Path(f"{OUTPUT_DIR}/content/content_{m.group(1)}.json")
+        if cf.exists():
+            try:
+                return json.loads(cf.read_text()).get("hook_variant")
+            except Exception:
+                return None
+    return None
+
+
+VISION_PROMPT = (
+    "This is a screenshot of Instagram (or TikTok) post analytics/insights. "
+    "Extract the engagement numbers. Return ONLY a JSON object, no prose:\n"
+    '{"views": int, "likes": int, "comments": int, "shares": int}\n'
+    "Rules: use views (or plays) for 'views'. If a value is shown with a K/M suffix, "
+    "expand it to a whole number (1.2K = 1200, 3.4M = 3400000). If a metric is not "
+    "visible, use 0."
+)
+
+
+def _tg_send(text: str) -> None:
+    import requests as req_lib
+    req_lib.post(
+        f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+        json={"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text}, timeout=10,
+    )
+
+
+def _ingest_screenshot(message: dict) -> dict:
+    """Download the photo from a Telegram message, read its metrics via Claude
+    vision, and record them against a date (caption, else most-recent un-scored)."""
+    import base64
+    import requests as req_lib
+    from anthropic import Anthropic
+    import experiment
+
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    content_dir = Path(f"{OUTPUT_DIR}/content")
+
+    # Largest rendition of the photo.
+    photos = message.get("photo") or []
+    if not photos:
+        return {"ok": False, "error": "no photo in message"}
+    file_id = photos[-1]["file_id"]
+
+    gf = req_lib.get(f"https://api.telegram.org/bot{token}/getFile",
+                     params={"file_id": file_id}, timeout=15).json()
+    file_path = gf.get("result", {}).get("file_path")
+    if not file_path:
+        return {"ok": False, "error": f"getFile failed: {gf}"}
+    img = req_lib.get(f"https://api.telegram.org/file/bot{token}/{file_path}", timeout=30).content
+    media_type = "image/png" if file_path.lower().endswith(".png") else "image/jpeg"
+
+    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    resp = client.messages.create(
+        model="claude-sonnet-4-6", max_tokens=300,
+        messages=[{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": media_type,
+                                         "data": base64.standard_b64encode(img).decode()}},
+            {"type": "text", "text": VISION_PROMPT},
+        ]}],
+    )
+    raw = resp.content[0].text.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        raw = raw[4:] if raw.startswith("json") else raw
+    metrics = json.loads(raw.strip())
+
+    # Date: caption (YYYY-MM-DD) else most-recent un-scored post.
+    caption = message.get("caption", "") or ""
+    m = re.search(r"\d{4}-\d{2}-\d{2}", caption)
+    date_str = m.group(0) if m else experiment.most_recent_unscored(content_dir)
+    if not date_str:
+        return {"ok": False, "error": "no date in caption and no un-scored post found"}
+
+    row = experiment.record_metrics(
+        content_dir, date_str,
+        int(metrics.get("views", 0)), int(metrics.get("likes", 0)),
+        int(metrics.get("comments", 0)), int(metrics.get("shares", 0)),
+    )
+    _tg_send(
+        f"📊 Recorded for {date_str} ({row['variant']}): "
+        f"{row['views']} views, {row['likes']} likes, "
+        f"{row['comments']} comments, {row['shares']} shares."
+    )
+    return {"ok": True, **row}
+
+
+@app.post("/ingest-screenshot")
+def ingest_screenshot():
+    """Body: a Telegram message object containing a photo (forwarded by n8n)."""
+    body = request.get_json(silent=True) or {}
+    message = body.get("message") or body
+    try:
+        result = _ingest_screenshot(message)
+    except Exception as exc:
+        _tg_send(f"❌ Couldn't read that screenshot: {exc}")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify(result), 200 if result.get("ok") else 400
+
+
+def _send_results() -> dict:
+    """Compute the hook leaderboard and send it to Telegram. Returns the summary."""
+    import experiment
+    summary = experiment.summary(Path(f"{OUTPUT_DIR}/content"))
+    variants = summary["variants"]
+    if not variants:
+        _tg_send("📈 No engagement data yet. Send an IG Insights screenshot to start.")
+        return summary
+    lines = [f"  {v}: {d['mean_score']} ({d['n']} posts)"
+             for v, d in sorted(variants.items(), key=lambda kv: -kv[1]["mean_score"])]
+    _tg_send("📈 Hook performance (engagement score):\n" + "\n".join(lines) +
+             (f"\n\n🏆 Leading: {summary['leader']}" if summary["leader"] else ""))
+    return summary
+
+
+@app.post("/results")
+def results():
+    """Summarize per-variant engagement and send the leaderboard to Telegram."""
+    return jsonify({"ok": True, **_send_results()})
 
 
 @app.post("/notify")
@@ -269,6 +402,21 @@ def handle_callback():
     body = request.get_json(silent=True) or {}
     # n8n wraps webhook body under 'body' key
     update = body.get("body") or body
+
+    # Photo message → engagement-screenshot ingestion (A/B feedback loop).
+    message = update.get("message") or {}
+    if message.get("photo"):
+        try:
+            result = _ingest_screenshot(message)
+        except Exception as exc:
+            _tg_send(f"❌ Couldn't read that screenshot: {exc}")
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify(result), 200 if result.get("ok") else 400
+
+    # "/results" text command → send the hook leaderboard.
+    if (message.get("text") or "").strip().lower().startswith("/results"):
+        return jsonify({"ok": True, **_send_results()})
+
     callback = update.get("callback_query")
 
     if not callback:
