@@ -6,26 +6,33 @@ _Last updated: 2026-06-09. Living doc — prune as items ship._
 - [x] ~~Open the PR for `feat/six-bands-and-hook-playbook`~~ — merged to `main` (ff) 2026-06-09.
 - [x] ~~Verify approval flow~~ — verified 2026-06-09: approve→render and regen→re-preview both work.
 
-## 🔧 Reliability fixes (planned — not yet built)
-_Two silent failures broke the 2026-06-09 morning run; both recovered manually. Plan below._
+## 🔧 Reliability fixes
+_Silent failures broke the 06-09 AND 06-10 morning runs. The cron one is now fixed; ngrok still open._
 
-### #1 ngrok is a manual process outside the stack (ROOT CAUSE of dropped Telegram callbacks)
+### #2 n8n schedule trigger stalls — FIXED 2026-06-10
+The n8n internal schedule trigger silently stopped firing (recurred two days running; a manual
+`docker compose restart n8n` re-armed it each time). Everything else in n8n (webhooks, HTTP, Wait)
+is reliable — only the *scheduler* is flaky.
+- [x] **Fix shipped:** moved scheduling into the always-on **worker**. A daemon thread in
+      `scripts/api.py` (`_scheduler_loop`) checks `/needs-run` every 15 min during the UTC window and
+      POSTs a new n8n **webhook** (`/webhook/daily-trigger`) that runs the existing
+      generate→preview→approve→render flow. The flaky `Run Check (15m, 9-22)` schedule trigger is
+      **disabled**; the webhook trigger feeds `Needs Run?` (workflow published). Includes a
+      **dead-man's-switch**: Telegram alert if a day is still un-generated after `DEADMAN_UTC` (14:00
+      UTC default) following a poke. Env knobs: `TRIGGER_START_UTC/END_UTC`, `TRIGGER_INTERVAL_SEC`,
+      `DEADMAN_UTC`, `N8N_DAILY_WEBHOOK`.
+- [ ] **Follow-up:** `n8n/workflow_daily_pipeline.json` snapshot is now stale (missing the
+      `Daily Trigger Webhook` node + disabled schedule). Re-export before any re-import, or the fix
+      is lost on import.
+
+### #1 ngrok is a manual process outside the stack (STILL OPEN — next reliability item)
 Every docker-compose service has `restart: unless-stopped`, but **ngrok runs as a separate manual
-process** — when it died, all Telegram button taps hit a dead tunnel (404) and nothing restarted it.
+process** — when it died (06-09), all Telegram button taps hit a dead tunnel (404) and nothing
+restarted it. The dead-man's-switch above now *alerts* on a stuck pipeline, but doesn't fix ngrok.
 - **Plan:** add an `ngrok` service to `docker-compose.yml` using the `ngrok/ngrok` image,
   `restart: unless-stopped`, command pointing at `n8n:5678`, with the **reserved domain** +
-  `NGROK_AUTHTOKEN` from `.env`. Comes up with `make up`, self-heals on crash.
-- **Payoff:** since the domain is reserved, the public URL never changes → Telegram webhook never
-  needs re-registration again. Eliminates this failure mode entirely. (~10 lines.)
-
-### #2 n8n catch-up cron did not re-arm after an ungraceful restart
-The 15-min catch-up cron stopped firing after n8n restarted ~13h prior (same "ungraceful Docker kill"
-footgun seen around exec #62). A manual `docker compose restart n8n` re-armed it.
-- **Decision:** do NOT deep-debug n8n's trigger-registration internals (rabbit hole).
-- **Plan:** add a **dead-man's-switch** — if `needs_run` is still `true` past ~14:00 local, send a
-  Telegram "⚠️ daily video not generated yet" alert. Converts silent misses into a visible ping,
-  catches #2 and any future silent failure cheaply. (Open question: where to host the check so it
-  doesn't depend on the same n8n cron that may be dead — likely host-level Windows Task Scheduler.)
+  `NGROK_AUTHTOKEN` from `.env`. Comes up with `make up`, self-heals on crash. Reserved domain →
+  webhook never needs re-registration. (~10 lines.)
 
 ## 🟡 Hook improvements (see `docs/hook-improvements.md` for full detail + cost math)
 Recommended rollout order — ship one at a time, measure **3-second view rate** ~5–7 days each:
