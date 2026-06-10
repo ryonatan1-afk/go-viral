@@ -151,16 +151,18 @@ def sanitize_text(s: str) -> str:
     for k, v in _SMART.items():
         s = s.replace(k, v)
     s = "".join(c for c in s if 32 <= ord(c) < 127)        # drop emoji/non-ascii
-    # Drop chars that break unquoted ffmpeg drawtext values: structural symbols,
-    # quotes/apostrophes (flip filtergraph quote state) and % (drawtext expansion).
-    s = re.sub(r"[\[\]{}<>;=@`\\|'\"%]", "", s)
+    # Drop chars that break unquoted ffmpeg drawtext values: structural symbols
+    # and quotes/apostrophes (flip filtergraph quote state). `%` is KEPT — every
+    # drawtext sets expansion=none, so a literal percent renders fine (e.g. "99%").
+    s = re.sub(r"[\[\]{}<>;=@`\\|'\"]", "", s)
     return " ".join(s.split()).strip()
 
 
 def esc(t: str) -> str:
-    """Escape a (sanitised) string for an unquoted ffmpeg drawtext value."""
+    """Escape a (sanitised) string for an unquoted ffmpeg drawtext value.
+    `%` is left intact and made safe by expansion=none on every drawtext."""
     return (t.replace("'", "\\'").replace(":", "\\:")
-             .replace(",", "\\,").replace("%", "\\%"))
+             .replace(",", "\\,"))
 
 
 def fit_fontsize(text: str, max_size: int, min_size: int,
@@ -188,7 +190,7 @@ def _drawtext(prev: str, nxt: str, fe: str, text: str, size, color: str,
               enable: str | None = None) -> str:
     """Build one drawtext filter step with an optional background box for legibility."""
     parts = [
-        f"fontfile={fe}", f"text={esc(text)}", f"fontsize={size}",
+        f"fontfile={fe}", f"text={esc(text)}", f"expansion=none", f"fontsize={size}",
         f"fontcolor={color}", f"x={x}", f"y={y}",
     ]
     if box:
@@ -421,7 +423,7 @@ def build_puzzle_cmd(p: VideoPayload, i: int, tmp: Path) -> tuple[str, list[str]
         bx = CANVAS_W - 40 - bw
         steps.append(f"[{prev}]drawbox=x={bx}:y=74:w={bw}:h=70:color={col}@0.92:t=fill[db]")
         steps.append(
-            f"[db]drawtext=fontfile={fe}:text={esc(dtext)}:fontsize={fs}:"
+            f"[db]drawtext=fontfile={fe}:text={esc(dtext)}:expansion=none:fontsize={fs}:"
             f"fontcolor=black:x={bx + 25}:y=86[dt]"
         )
         prev = "dt"
@@ -455,7 +457,7 @@ def build_puzzle_cmd(p: VideoPayload, i: int, tmp: Path) -> tuple[str, list[str]
         nxt = f"cd{n}"
         enable = f"gte(t\\,{t_s:.3f})*lte(t\\,{t_e:.3f})"
         steps.append(
-            f"[{prev}]drawtext=fontfile={fe}:text={n}:fontsize=280:"
+            f"[{prev}]drawtext=fontfile={fe}:text={n}:expansion=none:fontsize=280:"
             f"fontcolor=yellow@0.92:x=(w-text_w)/2:y=(h-text_h)/2:"
             f"enable={enable}[{nxt}]"
         )
