@@ -68,7 +68,15 @@ TRANSITION  = "fade"       # xfade type (reliable soft cut; not a hard cut)
 HOOK_VARIANT = os.environ.get("HOOK_VARIANT", "kinetic").lower()
 
 COUNTDOWN_N = 3            # show 3-2-1 in the last N seconds of each puzzle
-ZOOM_FACTOR = 1.12         # Ken Burns end scale
+ZOOM_FACTOR = 1.12         # Ken Burns end scale (reveal segment only)
+
+# Puzzle opening motion: horizontal strip-slide reveal (replaces Ken Burns).
+# Image is sliced into STRIP_COUNT bands that start offset (alternating L/R) and
+# ease into alignment over STRIP_CONVERGE s, so the picture visibly assembles.
+STRIP_COUNT    = 10        # number of horizontal bands
+STRIP_CONVERGE = 2.5       # seconds for the strips to slide into alignment
+STRIP_AMP      = 600       # px each strip is offset at t=0
+STRIP_EASE     = 1.6       # ease-out exponent (>1 decelerates into place)
 
 # Difficulty badge colours
 DIFF_COLORS = {"easy": "0x2ECC71", "medium": "0xF39C12", "hard": "0xE74C3C"}
@@ -393,18 +401,39 @@ def build_hook_cmd(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
     return builder(p, tmp)
 
 
+def _strip_converge_steps(src: str) -> tuple[list[str], str]:
+    """Horizontal strip-slide reveal. Scale the image to cover the canvas, slice
+    it into STRIP_COUNT bands that start offset (alternating left/right) over a
+    blurred base, and ease them into alignment over STRIP_CONVERGE seconds — so
+    the picture visibly assembles. Returns (filter steps, final label)."""
+    n = STRIP_COUNT
+    sh = CANVAS_H // n
+    steps = [
+        f"[{src}]scale={CANVAS_W}:{CANVAS_H}:force_original_aspect_ratio=increase,"
+        f"crop={CANVAS_W}:{CANVAS_H},setsar=1[simg]",
+        "[simg]split=2[sbase][sstrip]",
+        "[sbase]boxblur=20:2,eq=brightness=-0.40:saturation=0.9[scv0]",
+        f"[sstrip]split={n}[" + "][".join(f"ss{i}" for i in range(n)) + "]",
+    ]
+    for i in range(n):
+        h = CANVAS_H - (n - 1) * sh if i == n - 1 else sh   # last strip covers remainder
+        steps.append(f"[ss{i}]crop={CANVAS_W}:{h}:0:{i*sh}[sc{i}]")
+    prev = "scv0"
+    for i in range(n):
+        d = 1 if i % 2 == 0 else -1                          # alternate slide direction
+        expr = f"{d}*{STRIP_AMP}*pow(max(0\\,1-t/{STRIP_CONVERGE})\\,{STRIP_EASE})"
+        nxt = f"scv{i+1}"
+        steps.append(f"[{prev}][sc{i}]overlay=eval=frame:x={expr}:y={i*sh}[{nxt}]")
+        prev = nxt
+    return steps, prev
+
+
 def build_puzzle_cmd(p: VideoPayload, i: int, tmp: Path) -> tuple[str, list[str], float]:
     out = str(tmp / f"{i*2+1:02d}_puzzle{i}.mp4")
     fe = _font_esc(p.font_path)
-    n_frames = int(PUZZLE_DUR * FPS)
 
-    zoom = f"1+({ZOOM_FACTOR - 1.0})*on/{n_frames}"
-    steps = [
-        f"[0:v]scale=8000:-1,"
-        f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-        f"d={n_frames}:s={CANVAS_W}x{CANVAS_H}:fps={FPS},setsar=1[kb]"
-    ]
-    prev = "kb"
+    # Opening motion: strip-slide reveal (replaces the old Ken Burns zoom).
+    steps, prev = _strip_converge_steps("0:v")
 
     # Progress bar (top): background + filled portion for slide i (1-indexed)
     barw = CANVAS_W - 80
