@@ -25,14 +25,23 @@ is reliable — only the *scheduler* is flaky.
       `Daily Trigger Webhook` node + disabled schedule). Re-export before any re-import, or the fix
       is lost on import.
 
-### #1 ngrok is a manual process outside the stack (STILL OPEN — next reliability item)
-Every docker-compose service has `restart: unless-stopped`, but **ngrok runs as a separate manual
-process** — when it died (06-09), all Telegram button taps hit a dead tunnel (404) and nothing
-restarted it. The dead-man's-switch above now *alerts* on a stuck pipeline, but doesn't fix ngrok.
-- **Plan:** add an `ngrok` service to `docker-compose.yml` using the `ngrok/ngrok` image,
-  `restart: unless-stopped`, command pointing at `n8n:5678`, with the **reserved domain** +
-  `NGROK_AUTHTOKEN` from `.env`. Comes up with `make up`, self-heals on crash. Reserved domain →
-  webhook never needs re-registration. (~10 lines.)
+### #1 ngrok was a manual process outside the stack — FIXED 2026-06-11
+ngrok ran as a separate manual process and kept dying silently → Telegram callbacks 404'd.
+- [x] **Fix shipped:** added an `ngrok` service to `docker-compose.yml` (`ngrok/ngrok` image,
+      `restart: unless-stopped`, `command: http n8n:5678 --domain=${NGROK_DOMAIN}`, `NGROK_AUTHTOKEN`
+      from `.env`). Comes up with the stack, self-heals, reserved domain → no webhook re-registration.
+      Verified: public URL returns 200 through to n8n. The old manual `ngrok http 5678` is retired.
+
+### #3 Whole Docker stack was down — Docker Desktop not running (06-11 miss)
+06-11 didn't run because **Docker Desktop itself was off** (machine slept/rebooted; Docker didn't
+auto-launch). `restart: unless-stopped` can't help when the daemon is down. Recovered manually
+(start Docker → ngrok now dockerized → scheduler poke). Also exposed: the worker scheduler errored
+once because n8n boots slower than the worker and it wouldn't retry for 15 min.
+- [x] **Scheduler quick-retry shipped:** on a poke error the worker now retries in `TRIGGER_RETRY_SEC`
+      (60s) instead of the full 15 min, so a co-boot race self-heals within ~1 min.
+- [ ] **USER ACTION (host-level, not code):** enable Docker Desktop → Settings → General →
+      "Start Docker Desktop when you sign in." Closes the reboot/cold-start gap. (Claude is blocked
+      from editing host config, so this is a manual one-click toggle.)
 
 ## 🟡 Hook improvements (see `docs/hook-improvements.md` for full detail + cost math)
 Recommended rollout order — ship one at a time, measure **3-second view rate** ~5–7 days each:

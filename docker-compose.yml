@@ -85,6 +85,21 @@ services:
       - viral-net
     command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
 
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: go-viral-ngrok
+    restart: unless-stopped
+    # Exposes n8n publicly so Telegram callbacks reach the pipeline. Uses the
+    # reserved domain so the URL never changes (no webhook re-registration).
+    # Replaces the old manual `ngrok http 5678` process that kept dying silently.
+    command: http n8n:5678 --domain=${NGROK_DOMAIN}
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:?NGROK_AUTHTOKEN is required}
+    depends_on:
+      - n8n
+    networks:
+      - viral-net
+
   flower:
     image: mher/flower:2.0
     container_name: go-viral-flower

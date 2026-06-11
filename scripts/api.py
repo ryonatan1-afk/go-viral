@@ -472,6 +472,7 @@ def _scheduler_loop():
     end_h = int(os.getenv("TRIGGER_END_UTC", "22"))        # window end   (UTC hour)
     deadman_h = int(os.getenv("DEADMAN_UTC", "14"))        # alert after this UTC hour
     interval = int(os.getenv("TRIGGER_INTERVAL_SEC", "900"))
+    retry = int(os.getenv("TRIGGER_RETRY_SEC", "60"))      # short retry after an error
     webhook = os.getenv("N8N_DAILY_WEBHOOK", "http://n8n:5678/webhook/daily-trigger")
 
     poked_on: str | None = None     # date we last poked n8n for
@@ -479,6 +480,7 @@ def _scheduler_loop():
 
     print(f"[scheduler] started — window {start_h}-{end_h} UTC, every {interval}s", flush=True)
     while True:
+        sleep_for = interval
         try:
             now = datetime.now(timezone.utc)
             today = now.date().isoformat()
@@ -495,8 +497,10 @@ def _scheduler_loop():
                     poked_on = today
                     print(f"[scheduler] poked daily trigger for {today}", flush=True)
         except Exception as e:
-            print(f"[scheduler] error: {e}", flush=True)
-        time.sleep(interval)
+            # n8n/network not ready (e.g. both just booted) — retry soon, not in 15 min.
+            print(f"[scheduler] error: {e} — retrying in {retry}s", flush=True)
+            sleep_for = retry
+        time.sleep(sleep_for)
 
 
 def _start_scheduler():
