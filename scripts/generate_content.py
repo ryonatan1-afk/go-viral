@@ -52,8 +52,8 @@ You are a creative director for a viral social media account called "Guess the B
 Each day you pick 6 rock/pop bands whose names can be depicted as a literal visual scene.
 
 Rules:
-- Choose bands with visually punnable names (e.g. Radiohead, The Beatles, Gorillaz, Imagine Dragons, Arctic Monkeys, Red Hot Chili Peppers, Foo Fighters, Green Day, Nine Inch Nails, Pearl Jam, Stone Temple Pilots, Soundgarden, Smashing Pumpkins, The Killers, Queens of the Stone Age, System of a Down, Alice in Chains, Black Sabbath, Iron Maiden, Judas Priest, Guns N Roses, Def Leppard, White Stripes, Black Keys, etc.)
-- Avoid bands used in previous sessions if possible
+- Choose bands with visually punnable names (e.g. Radiohead, The Beatles, Imagine Dragons, Arctic Monkeys, Red Hot Chili Peppers, Foo Fighters, Green Day, Nine Inch Nails, Pearl Jam, Stone Temple Pilots, Soundgarden, Smashing Pumpkins, The Killers, Queens of the Stone Age, System of a Down, Alice in Chains, Black Sabbath, Iron Maiden, Judas Priest, Guns N Roses, Def Leppard, White Stripes, Black Keys, etc.)
+- NEVER pick any band from the "Previously used bands" list below — pick completely different bands
 - Mix difficulty across the 6 bands: 2 easy (mainstream), 1 medium, 3 hard
 
 ON-SCREEN TEXT RULES (critical — text is rendered in a bold condensed font):
@@ -80,7 +80,29 @@ Return ONLY valid JSON, no markdown, no explanation:
 }}
 
 Today's date: {today}
-Previously used bands (avoid): {used_bands}
+Previously used bands (NEVER use any of these): {used_bands}
+"""
+
+FILL_PROMPT = """\
+You are a creative director for a viral social media account called "Guess the Band".
+Pick exactly {n} MORE rock/pop bands with visually punnable names to complete today's set.
+
+NEVER use any band from this list: {used_bands}
+
+ON-SCREEN TEXT RULES: NO emoji or special symbols, plain ASCII only.
+riddle_title max ~18 chars, engagement_caption max ~22 chars.
+
+Return ONLY a valid JSON array (no wrapper object), e.g.:
+[
+  {{
+    "name": "Band Name",
+    "difficulty": "easy|medium|hard",
+    "visual_concept": "one sentence",
+    "image_prompt": "Detailed FLUX prompt. Style: bold graphic illustration, vibrant colors, 9:16 vertical format, no text, no words, cinematic lighting.",
+    "riddle_title": "Short title, no emoji",
+    "engagement_caption": "Short caption, no emoji"
+  }}
+]
 """
 
 # Sort order so puzzles escalate easy -> hard across the video
@@ -232,8 +254,49 @@ Return ONLY valid JSON:
             break
         log.warning("duplicate_bands_retry", attempt=attempt, dups=dups)
         used = used + dups  # strengthen the avoid list for the next attempt
-    else:
-        log.warning("duplicate_bands_unresolved", names=[b["name"] for b in bands])
+
+    # Hard-filter any still-duplicate bands Claude refused to drop, then fill gaps.
+    used_norm = {_norm_band(u) for u in used}
+    seen_norm: set[str] = set()
+    clean: list[dict] = []
+    for b in bands:
+        k = _norm_band(b["name"])
+        if k not in used_norm and k not in seen_norm:
+            clean.append(b)
+            seen_norm.add(k)
+        else:
+            log.warning("duplicate_band_dropped", band=b["name"])
+
+    gap = 6 - len(clean)
+    if gap > 0:
+        avoid_all = list(used) + [b["name"] for b in clean]
+        log.info("filling_band_gap", gap=gap, avoid_count=len(avoid_all))
+        fill_resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            messages=[{
+                "role": "user",
+                "content": FILL_PROMPT.format(
+                    n=gap,
+                    used_bands=", ".join(avoid_all),
+                ),
+            }],
+        )
+        raw = fill_resp.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        fill_bands = json.loads(raw.strip())
+        for b in fill_bands:
+            k = _norm_band(b["name"])
+            if k not in used_norm and k not in seen_norm:
+                clean.append(b)
+                seen_norm.add(k)
+        if len(clean) < 6:
+            log.warning("fill_incomplete", have=len(clean))
+
+    bands = clean
 
     # Sort puzzles to escalate easy -> hard across the video
     bands.sort(key=lambda b: DIFFICULTY_RANK.get(str(b.get("difficulty", "")).lower(), 1))
