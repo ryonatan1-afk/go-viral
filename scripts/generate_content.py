@@ -52,8 +52,11 @@ You are a creative director for a viral social media account called "Guess the B
 Each day you pick 6 rock/pop bands whose names can be depicted as a literal visual scene.
 
 Rules:
-- Choose bands with visually punnable names (e.g. Radiohead, The Beatles, Gorillaz, Imagine Dragons, Arctic Monkeys, Red Hot Chili Peppers, Foo Fighters, Green Day, Nine Inch Nails, Pearl Jam, Stone Temple Pilots, Soundgarden, Smashing Pumpkins, The Killers, Queens of the Stone Age, System of a Down, Alice in Chains, Black Sabbath, Iron Maiden, Judas Priest, Guns N Roses, Def Leppard, White Stripes, Black Keys, etc.)
-- Avoid bands used in previous sessions if possible
+- Choose bands with visually punnable names — names that depict a literal scene
+  (a radio for a head, a beetle, fighting foos, etc.). The point is the visual pun.
+- CRITICAL — NEVER reuse a band: do NOT pick ANY band that appears in the
+  "Previously used bands" list below. Those are permanently retired. Every band
+  you return must be brand new and absent from that list. This rule is absolute.
 - Mix difficulty across the 6 bands: 2 easy (mainstream), 1 medium, 3 hard
 
 ON-SCREEN TEXT RULES (critical — text is rendered in a bold condensed font):
@@ -198,12 +201,23 @@ Return ONLY valid JSON:
             "cta": parsed.get("cta", "FOLLOW FOR DAILY PUZZLES"),
         }
 
-    # ── Daily selection: avoid previously-used bands, retry if Claude repeats ──
+    # ── Daily selection: accumulate 6 UNIQUE bands, hard-filtering anything in the
+    # avoid-list or already chosen. Claude has historically re-suggested retired
+    # bands (its own prompt examples), so the filter — not Claude — is the guarantee.
     used = load_used_bands(output_dir)
+    avoid_norm = {_norm_band(u) for u in used}
     client = Anthropic(api_key=ANTHROPIC_KEY)
-    bands, hook, cta = [], "GUESS THE BAND", "FOLLOW FOR DAILY PUZZLES"
 
-    for attempt in range(1, 4):
+    collected: list[dict] = []
+    collected_norm: set[str] = set()
+    hook, cta = "GUESS THE BAND", "FOLLOW FOR DAILY PUZZLES"
+    NEEDED = 6
+
+    for attempt in range(1, 6):
+        if len(collected) >= NEEDED:
+            break
+        # Exclude both history and what we've already accepted this run.
+        exclude = sorted(set(used) | {b["name"] for b in collected})
         resp = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=2000,
@@ -211,29 +225,32 @@ Return ONLY valid JSON:
                 "role": "user",
                 "content": BAND_PROMPT.format(
                     today=date.today().isoformat(),
-                    used_bands=", ".join(used) if used else "none",
+                    used_bands=", ".join(exclude) if exclude else "none",
                 ),
             }],
         )
         parsed = _parse_claude_json(resp.content[0].text)
-        bands = parsed["bands"]
-        hook = parsed.get("hook", "GUESS THE BAND")
-        cta = parsed.get("cta", "FOLLOW FOR DAILY PUZZLES")
+        if attempt == 1:
+            hook = parsed.get("hook", hook)
+            cta = parsed.get("cta", cta)
 
-        used_norm = {_norm_band(u) for u in used}
-        seen, dups = set(), []
-        for b in bands:
-            k = _norm_band(b["name"])
-            if k in used_norm or k in seen:
-                dups.append(b["name"])
-            seen.add(k)
+        rejected = []
+        for b in parsed.get("bands", []):
+            k = _norm_band(b.get("name", ""))
+            if not k or k in avoid_norm or k in collected_norm:
+                if k:
+                    rejected.append(b.get("name", ""))
+                continue
+            collected.append(b)
+            collected_norm.add(k)
+            if len(collected) >= NEEDED:
+                break
+        if rejected:
+            log.warning("filtered_repeat_bands", attempt=attempt, rejected=rejected)
 
-        if not dups:
-            break
-        log.warning("duplicate_bands_retry", attempt=attempt, dups=dups)
-        used = used + dups  # strengthen the avoid list for the next attempt
-    else:
-        log.warning("duplicate_bands_unresolved", names=[b["name"] for b in bands])
+    bands = collected[:NEEDED]
+    if len(bands) < NEEDED:
+        log.warning("insufficient_unique_bands", got=len(bands), needed=NEEDED)
 
     # Sort puzzles to escalate easy -> hard across the video
     bands.sort(key=lambda b: DIFFICULTY_RANK.get(str(b.get("difficulty", "")).lower(), 1))
