@@ -220,10 +220,9 @@ def _run_ffmpeg(cmd: list[str], what: str) -> None:
 
 # ── Segment builders (each returns (out_path, cmd, duration)) ──────────────────
 
-def _hook_bg(p: VideoPayload) -> tuple[list[str], str]:
-    """Shared blurred N-image collage background for every hook variant.
-    4 images → 2x2, 6 images → 2x3. Cells tile the full canvas. Returns
-    (filter steps, last label = "bg")."""
+def _collage_steps(p: VideoPayload) -> tuple[list[str], str]:
+    """Build the raw N-image collage tiled to the canvas (4→2x2, 6→2x3).
+    Returns (filter steps, label of the full-canvas sharp collage = "grid")."""
     n = len(p.images)
     cols = 2
     rows = math.ceil(n / cols)
@@ -240,10 +239,41 @@ def _hook_bg(p: VideoPayload) -> tuple[list[str], str]:
         cells = [f"[q{r * cols + c}]" for c in range(cols) if r * cols + c < n]
         steps.append(f"{''.join(cells)}hstack=inputs={len(cells)}[row{r}]")
         row_labels.append(f"[row{r}]")
-    steps.append(f"{''.join(row_labels)}vstack=inputs={rows}[grid]")
+    steps.append(f"{''.join(row_labels)}vstack=inputs={rows},"
+                 f"scale={CANVAS_W}:{CANVAS_H},setsar=1[grid]")
+    return steps, "grid"
+
+
+def _hook_bg(p: VideoPayload) -> tuple[list[str], str]:
+    """Blurred collage background (kinetic/classic). Returns (steps, "bg")."""
+    steps, grid = _collage_steps(p)
+    steps.append(f"[{grid}]boxblur=24:2,eq=brightness=-0.28:saturation=1.05[bg]")
+    return steps, "bg"
+
+
+def _hook_bg_glitch(p: VideoPayload) -> tuple[list[str], str]:
+    """Datamosh-style chromatic-aberration glitch over the collage: R/G/B sampled
+    at a horizontal offset that decays to 0 over ~1.5s, plus flicker noise."""
+    steps, grid = _collage_steps(p)
+    s = "48*max(0\\,1-T/1.5)"   # per-channel shift, eases to 0
     steps.append(
-        f"[grid]boxblur=24:2,eq=brightness=-0.28:saturation=1.05,"
-        f"scale={CANVAS_W}:{CANVAS_H},setsar=1[bg]"
+        f"[{grid}]eq=brightness=-0.18,format=gbrp,"
+        f"geq=r=r(X+{s}\\,Y):g=g(X\\,Y+0.35*{s}):b=b(X-{s}\\,Y),"
+        f"noise=alls=16:allf=t+u[bg]"
+    )
+    return steps, "bg"
+
+
+def _hook_bg_zoom(p: VideoPayload) -> tuple[list[str], str]:
+    """Snap zoom-out: open ~3x into the collage centre, then a fast pull-back to
+    the full grid over the first ~0.4s (then hold)."""
+    steps, grid = _collage_steps(p)
+    frames = int(HOOK_DUR * FPS)
+    z = "max(1\\,3-2*on/12)"   # 3x → 1x across ~12 frames (~0.4s), then holds at 1
+    steps.append(
+        f"[{grid}]boxblur=4:1,eq=brightness=-0.20:saturation=1.05,"
+        f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+        f"d={frames}:s={CANVAS_W}x{CANVAS_H}:fps={FPS}[bg]"
     )
     return steps, "bg"
 
@@ -308,12 +338,10 @@ def build_hook_classic(p: VideoPayload, tmp: Path) -> tuple[str, list[str], floa
     return out, _finish_hook(steps, prev, p, out), HOOK_DUR
 
 
-def build_hook_kinetic(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
-    """Idea #5 — kinetic stakes-UI hook: word-by-word pops + live game UI (score
-    counter, difficulty meter, draining timer) so the open loop is *visible* in 1s."""
-    out = str(tmp / "00_hook.mp4")
-    fe = _font_esc(p.font_path)
-    steps, prev = _hook_bg(p)
+def _kinetic_ui(p: VideoPayload, fe: str, steps: list[str], prev: str) -> tuple[list[str], str]:
+    """Overlay the live game UI — 0/N score chip, difficulty meter, word-by-word
+    hook pops, draining timer, sub line — on top of whatever background `prev` is.
+    Shared by every kinetic-style hook variant (plain, glitch, zoom)."""
     n = len(p.images)
 
     # ── Top game UI ──
@@ -390,14 +418,44 @@ def build_hook_kinetic(p: VideoPayload, tmp: Path) -> tuple[str, list[str], floa
         box="black@0.45",
     ))
     prev = "ksub"
+    return steps, prev
 
+
+def build_hook_kinetic(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
+    """Kinetic stakes-UI hook (idea #5) over a blurred collage."""
+    out = str(tmp / "00_hook.mp4")
+    fe = _font_esc(p.font_path)
+    steps, prev = _hook_bg(p)
+    steps, prev = _kinetic_ui(p, fe, steps, prev)
+    return out, _finish_hook(steps, prev, p, out), HOOK_DUR
+
+
+def build_hook_glitch(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
+    """Datamosh chromatic-glitch collage + the kinetic game UI on top."""
+    out = str(tmp / "00_hook.mp4")
+    fe = _font_esc(p.font_path)
+    steps, prev = _hook_bg_glitch(p)
+    steps, prev = _kinetic_ui(p, fe, steps, prev)
+    return out, _finish_hook(steps, prev, p, out), HOOK_DUR
+
+
+def build_hook_zoom(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
+    """Snap zoom-out reveal of the collage + the kinetic game UI on top."""
+    out = str(tmp / "00_hook.mp4")
+    fe = _font_esc(p.font_path)
+    steps, prev = _hook_bg_zoom(p)
+    steps, prev = _kinetic_ui(p, fe, steps, prev)
     return out, _finish_hook(steps, prev, p, out), HOOK_DUR
 
 
 def build_hook_cmd(p: VideoPayload, tmp: Path) -> tuple[str, list[str], float]:
     """Dispatch to the payload's hook_variant (defaults to kinetic)."""
-    builder = {"classic": build_hook_classic,
-               "kinetic": build_hook_kinetic}.get(p.hook_variant, build_hook_kinetic)
+    builder = {
+        "classic": build_hook_classic,
+        "kinetic": build_hook_kinetic,
+        "glitch": build_hook_glitch,
+        "zoom": build_hook_zoom,
+    }.get(p.hook_variant, build_hook_kinetic)
     return builder(p, tmp)
 
 

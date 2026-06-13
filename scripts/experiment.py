@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 # Hook variants under test. Must match the dispatch arms in generate_video.py.
-VARIANTS = ["kinetic", "classic"]
+VARIANTS = ["kinetic", "classic", "glitch", "zoom"]
 
 EXPERIMENTS_CSV = "experiments.csv"
 RESULTS_CSV = "results.csv"
