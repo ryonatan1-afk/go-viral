@@ -27,8 +27,11 @@ EXPERIMENTS_CSV = "experiments.csv"
 RESULTS_CSV = "results.csv"
 
 EXP_FIELDS = ["date", "variant"]
-RES_FIELDS = ["date", "variant", "views", "likes", "comments", "shares",
-              "captured_at", "source"]
+# Metrics come from IG Reel insights "What affects your views" panel (rates, %).
+# skip_rate is the primary hook signal — the hook's job is to lower it.
+RES_FIELDS = ["date", "variant", "skip_rate", "like_rate", "comment_rate",
+              "share_rate", "save_rate", "captured_at", "source"]
+RATE_FIELDS = ["skip_rate", "like_rate", "comment_rate", "share_rate", "save_rate"]
 
 
 # ── low-level CSV helpers ───────────────────────────────────────────────────────
@@ -90,15 +93,20 @@ def assign_variant(output_dir: Path, date_str: str) -> str:
 
 # ── metrics ingestion ─────────────────────────────────────────────────────────
 
-def record_metrics(output_dir: Path, date_str: str, views: int, likes: int,
-                   comments: int, shares: int, source: str = "manual") -> dict:
-    """Upsert a metrics row for date_str (latest screenshot wins)."""
+def record_metrics(output_dir: Path, date_str: str, skip_rate: float,
+                   like_rate: float, comment_rate: float, share_rate: float,
+                   save_rate: float, source: str = "manual") -> dict:
+    """Upsert a rates row for date_str (latest screenshot wins). All values are
+    percentages from the IG 'What affects your views' panel."""
     output_dir.mkdir(parents=True, exist_ok=True)
     variant = variant_for_date(output_dir, date_str) or "unknown"
     row = {
         "date": date_str, "variant": variant,
-        "views": int(views), "likes": int(likes),
-        "comments": int(comments), "shares": int(shares),
+        "skip_rate": round(float(skip_rate), 2),
+        "like_rate": round(float(like_rate), 2),
+        "comment_rate": round(float(comment_rate), 2),
+        "share_rate": round(float(share_rate), 2),
+        "save_rate": round(float(save_rate), 2),
         "captured_at": datetime.now().isoformat(timespec="seconds"),
         "source": source,
     }
@@ -123,24 +131,39 @@ def most_recent_unscored(output_dir: Path) -> str | None:
 
 # ── analysis ────────────────────────────────────────────────────────────────────
 
-def engagement_score(views: int, likes: int, comments: int, shares: int) -> float:
-    return (likes + 2 * comments + 3 * shares) / max(views, 1)
+def interaction_rate(like_rate: float, comment_rate: float,
+                     share_rate: float, save_rate: float) -> float:
+    """Secondary signal: total positive engagement per view (sum of %)."""
+    return like_rate + comment_rate + share_rate + save_rate
 
 
 def summary(output_dir: Path) -> dict:
-    """Per-variant mean engagement score + sample count, and the current leader."""
-    per: dict[str, list[float]] = {}
+    """Per-variant mean skip rate (primary — lower is better) + mean engagement,
+    plus the current leader (the variant that holds viewers best = lowest skip)."""
+    skip: dict[str, list[float]] = {}
+    eng: dict[str, list[float]] = {}
     for r in _read_rows(output_dir / RESULTS_CSV):
         try:
-            s = engagement_score(int(r["views"]), int(r["likes"]),
-                                  int(r["comments"]), int(r["shares"]))
+            v = r.get("variant", "unknown")
+            skip.setdefault(v, []).append(float(r["skip_rate"]))
+            eng.setdefault(v, []).append(interaction_rate(
+                float(r["like_rate"]), float(r["comment_rate"]),
+                float(r["share_rate"]), float(r["save_rate"])))
         except (ValueError, KeyError):
             continue
-        per.setdefault(r.get("variant", "unknown"), []).append(s)
 
-    variants = {
-        v: {"n": len(scores), "mean_score": round(sum(scores) / len(scores), 4)}
-        for v, scores in per.items() if scores
-    }
-    leader = max(variants, key=lambda v: variants[v]["mean_score"]) if variants else None
+    variants = {}
+    for v, skips in skip.items():
+        if not skips:
+            continue
+        mean_skip = sum(skips) / len(skips)
+        engs = eng.get(v, [])
+        variants[v] = {
+            "n": len(skips),
+            "mean_skip": round(mean_skip, 2),
+            "mean_hold": round(100.0 - mean_skip, 2),
+            "mean_engagement": round(sum(engs) / len(engs), 2) if engs else 0.0,
+        }
+    # Best hook = lowest skip rate (highest hold).
+    leader = min(variants, key=lambda v: variants[v]["mean_skip"]) if variants else None
     return {"variants": variants, "leader": leader}

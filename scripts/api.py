@@ -259,12 +259,15 @@ def _variant_from_content(image_paths: list[str]) -> str | None:
 
 
 VISION_PROMPT = (
-    "This is a screenshot of Instagram (or TikTok) post analytics/insights. "
-    "Extract the engagement numbers. Return ONLY a JSON object, no prose:\n"
-    '{"views": int, "likes": int, "comments": int, "shares": int}\n'
-    "Rules: use views (or plays) for 'views'. If a value is shown with a K/M suffix, "
-    "expand it to a whole number (1.2K = 1200, 3.4M = 3400000). If a metric is not "
-    "visible, use 0."
+    "This is a screenshot of an Instagram Reel insights 'What affects your views' "
+    "panel. It lists rates as percentages (e.g. 'Skip rate 78.0%', 'Like rate 0.9%'). "
+    "Extract these rates as plain numbers (percent value without the % sign). "
+    "Return ONLY a JSON object, no prose:\n"
+    '{"skip_rate": number, "like_rate": number, "comment_rate": number, '
+    '"share_rate": number, "save_rate": number}\n'
+    "Rules: skip_rate is the most important — read it exactly. For share_rate use the "
+    "'Share rate'; if only 'Repost rate' is shown, use that. If a metric is not visible, "
+    "use 0. Example: 'Skip rate 78.0%' -> skip_rate: 78.0, 'Like rate 0.9%' -> like_rate: 0.9."
 )
 
 
@@ -323,15 +326,22 @@ def _ingest_screenshot(message: dict) -> dict:
     if not date_str:
         return {"ok": False, "error": "no date in caption and no un-scored post found"}
 
+    def _num(key):
+        try:
+            return float(metrics.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
     row = experiment.record_metrics(
         content_dir, date_str,
-        int(metrics.get("views", 0)), int(metrics.get("likes", 0)),
-        int(metrics.get("comments", 0)), int(metrics.get("shares", 0)),
+        _num("skip_rate"), _num("like_rate"), _num("comment_rate"),
+        _num("share_rate"), _num("save_rate"),
     )
+    hold = round(100.0 - row["skip_rate"], 1)
     _tg_send(
-        f"📊 Recorded for {date_str} ({row['variant']}): "
-        f"{row['views']} views, {row['likes']} likes, "
-        f"{row['comments']} comments, {row['shares']} shares."
+        f"📊 Recorded for {date_str} ({row['variant']}): skip {row['skip_rate']}% "
+        f"(hold {hold}%) | like {row['like_rate']}% comment {row['comment_rate']}% "
+        f"share {row['share_rate']}% save {row['save_rate']}%."
     )
     return {"ok": True, **row}
 
@@ -355,12 +365,14 @@ def _send_results() -> dict:
     summary = experiment.summary(Path(f"{OUTPUT_DIR}/content"))
     variants = summary["variants"]
     if not variants:
-        _tg_send("📈 No engagement data yet. Send an IG Insights screenshot to start.")
+        _tg_send("📈 No data yet. Send an IG Reel-insights screenshot to start.")
         return summary
-    lines = [f"  {v}: {d['mean_score']} ({d['n']} posts)"
-             for v, d in sorted(variants.items(), key=lambda kv: -kv[1]["mean_score"])]
-    _tg_send("📈 Hook performance (engagement score):\n" + "\n".join(lines) +
-             (f"\n\n🏆 Leading: {summary['leader']}" if summary["leader"] else ""))
+    # Rank by hold rate (lowest skip = best hook).
+    lines = [f"  {v}: hold {d['mean_hold']}% (skip {d['mean_skip']}%), "
+             f"eng {d['mean_engagement']}% — {d['n']} posts"
+             for v, d in sorted(variants.items(), key=lambda kv: kv[1]["mean_skip"])]
+    _tg_send("📈 Hook performance (higher hold = better):\n" + "\n".join(lines) +
+             (f"\n\n🏆 Best hook: {summary['leader']}" if summary["leader"] else ""))
     return summary
 
 
