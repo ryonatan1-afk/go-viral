@@ -288,10 +288,75 @@ def download_image(url: str, dest: Path) -> Path:
     return dest
 
 
+def _pick_replacement_band(client: Anthropic, avoid_norm: set[str],
+                           difficulty: str) -> dict:
+    """Ask Claude for ONE fresh punnable band (preferably of `difficulty`) that is
+    not in avoid_norm. Filters deterministically; retries up to 4 times."""
+    prompt = (
+        'Generate ONE rock/pop band with a visually punnable name for a '
+        '"Guess the Band" puzzle. Difficulty: {difficulty}.\n'
+        'ABSOLUTE RULE: do NOT pick any band in this retired list: {avoid}\n'
+        'ON-SCREEN TEXT: no emoji/special symbols, plain ASCII; riddle_title <=18 '
+        'chars, engagement_caption <=22 chars.\n'
+        'Return ONLY JSON: {{"name":"","difficulty":"{difficulty}","visual_concept":'
+        '"one sentence literal visual pun","image_prompt":"Detailed FLUX prompt. '
+        'Style: bold graphic illustration, vibrant colors, 9:16 vertical, no text, '
+        'no words, cinematic lighting.","riddle_title":"","engagement_caption":""}}'
+    )
+    avoid_names = ", ".join(sorted(avoid_norm))[:1500]
+    for _ in range(4):
+        resp = client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=600,
+            messages=[{"role": "user", "content": prompt.format(
+                difficulty=difficulty or "medium", avoid=avoid_names)}],
+        )
+        band = _parse_claude_json(resp.content[0].text)
+        if _norm_band(band.get("name", "")) not in avoid_norm:
+            return band
+        log.warning("replacement_repeat_retry", band=band.get("name"))
+    return band  # last attempt, even if imperfect
+
+
 def run(output_dir: Path, override_bands: list[str] | None = None) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     today = date.today().isoformat()
     content_file = output_dir / f"content_{today}.json"
+
+    # Handle __REPLACE__ — swap specific slots for a brand-new band (not just a new
+    # image). Updates the band dict AND the parallel arrays the renderer reads.
+    if content_file.exists() and override_bands and any(b == "__REPLACE__" for b in override_bands):
+        log.info("replace_mode", path=str(content_file))
+        content = json.loads(content_file.read_text())
+        avoid = {_norm_band(x) for x in load_used_bands(output_dir)}
+        avoid |= {_norm_band(b["name"]) for b in content["bands"]}
+        client = Anthropic(api_key=ANTHROPIC_KEY)
+        for i, flag in enumerate(override_bands):
+            if flag != "__REPLACE__" or i >= len(content["bands"]):
+                continue
+            old = content["bands"][i]
+            newb = _pick_replacement_band(client, avoid, old.get("difficulty", "medium"))
+            avoid.add(_norm_band(newb["name"]))
+            img_path = Path(old.get("image_path") or
+                            output_dir / f"{content['date']}_band_{i+1}.png")
+            if img_path.exists():
+                img_path.unlink()
+            url = generate_image(newb["image_prompt"], newb["name"])
+            download_image(url, img_path)
+            newb["image_path"] = str(img_path)
+            newb["image_index"] = i + 1
+            content["bands"][i] = newb
+            # Keep the renderer's parallel arrays in sync.
+            for key, val in [("titles", newb.get("riddle_title", "")),
+                             ("captions", newb.get("engagement_caption", "")),
+                             ("band_names", newb["name"]),
+                             ("difficulties", newb.get("difficulty", "")),
+                             ("image_paths", str(img_path))]:
+                if isinstance(content.get(key), list) and i < len(content[key]):
+                    content[key][i] = val
+            log_bands_csv(output_dir, content["date"], [newb])
+            log.info("replace_complete", index=i, new=newb["name"])
+        content_file.write_text(json.dumps(content))
+        return content
 
     # Handle __REGEN__ — regenerate only specific band images with a fresh concept
     if content_file.exists() and override_bands and any(b == "__REGEN__" for b in override_bands):

@@ -133,6 +133,36 @@ def regen_image():
     return jsonify({"ok": True, **updated})
 
 
+def _replace_band(date_str: str, band_index: int) -> dict:
+    """Swap the band at band_index for a brand-new one (different band, new image),
+    updating the content JSON. Returns the updated content or an error dict."""
+    content_file = Path(f"{OUTPUT_DIR}/content/content_{date_str}.json")
+    if not content_file.exists():
+        return {"ok": False, "error": f"No content file for {date_str}"}
+    bands = [b["name"] for b in json.loads(content_file.read_text())["bands"]]
+    if band_index < 0 or band_index >= len(bands):
+        return {"ok": False, "error": f"band_index {band_index} out of range"}
+    repl = [b if i != band_index else "__REPLACE__" for i, b in enumerate(bands)]
+    cmd = [sys.executable, "scripts/generate_content.py",
+           "--output-dir", f"{OUTPUT_DIR}/content", "--json-out", "--bands"] + repl
+    result = _run(cmd, timeout=300)
+    if not result["ok"]:
+        return result
+    updated = _parse_content_json(result["stdout"])
+    return {"ok": True, **updated} if updated else {"ok": False, "error": "no JSON from replace"}
+
+
+@app.post("/replace-band")
+def replace_band():
+    """Replace a band with a different one. Body: { date: str, band_index: int }"""
+    body = request.get_json(silent=True) or {}
+    date_str, band_index = body.get("date"), body.get("band_index")
+    if date_str is None or band_index is None:
+        return jsonify({"ok": False, "error": "date and band_index required"}), 400
+    result = _replace_band(date_str, int(band_index))
+    return jsonify(result), 200 if result.get("ok") else 400
+
+
 @app.post("/send-preview")
 def send_preview():
     """Send Telegram preview. Body: { date: str, resume_url: str }"""
@@ -444,15 +474,43 @@ def handle_callback():
     date_key = parts[1]
     band_index = int(parts[2]) if len(parts) > 2 else None
 
-    # Read the resume URL written by telegram_bot.py
+    bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
     sidecar = Path(f"{OUTPUT_DIR}/content/resume_{date_key}.txt")
+
+    # ── Replace band: handled worker-side (n8n stays paused at the Wait node). ──
+    # Swap the band for a new one, then re-send the preview reusing the same resume
+    # URL. The n8n execution is NOT resumed, so Approve later still works.
+    if action == "replace" and band_index is not None:
+        req_lib.post(
+            f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
+            data={"callback_query_id": callback_id,
+                  "text": f"♻️ Replacing band #{band_index + 1}…"}, timeout=5,
+        )
+
+        def _bg_replace():
+            res = _replace_band(date_key, band_index)
+            if not res.get("ok"):
+                _tg_send(f"❌ Replace failed: {res.get('error')}")
+                return
+            resume_url = sidecar.read_text().strip() if sidecar.exists() else ""
+            _run([sys.executable, "scripts/telegram_bot.py",
+                  "--action", "send_preview",
+                  "--content-file", f"{OUTPUT_DIR}/content/content_{date_key}.json",
+                  "--resume-url", resume_url,
+                  "--chat-id", os.environ["TELEGRAM_CHAT_ID"]], timeout=180)
+
+        import threading
+        threading.Thread(target=_bg_replace, daemon=True).start()
+        return jsonify({"ok": True, "action": "replace", "date": date_key,
+                        "band_index": band_index, "mode": "worker-side"})
+
+    # Read the resume URL written by telegram_bot.py
     if not sidecar.exists():
         return jsonify({"ok": False, "error": f"No resume sidecar for {date_key}"}), 404
 
     resume_url = sidecar.read_text().strip().replace("http://localhost:5678", "http://n8n:5678")
 
     # Acknowledge the Telegram button tap
-    bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
     req_lib.post(
         f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
         data={"callback_query_id": callback_id, "text": "Got it!"},

@@ -96,20 +96,23 @@ def send_preview(content_file: str, resume_url: str, chat_id: str) -> None:
         f"<b>🎸 Daily Band Puzzles — {date_key}</b>\n\n"
         f"Review the {len(bands)} images above.\n"
         f"Answers (tap to reveal):\n{band_names_preview}\n\n"
-        f"Approve to start rendering, or pick an image to regenerate."
+        f"Approve to render. Per band: 🔄 Regen = new image, same band · "
+        f"♻️ Replace = swap for a different band."
     )
 
-    # One regen button per band, laid out 2 per row (handles any band count).
-    regen_buttons = [
-        {"text": f"🔄 Regen #{i + 1}", "callback_data": f"regen|{date_key}|{i}"}
+    # Per band, a row with both controls: regen the image, or replace the band.
+    band_rows = [
+        [
+            {"text": f"🔄 Regen #{i + 1}", "callback_data": f"regen|{date_key}|{i}"},
+            {"text": f"♻️ Replace #{i + 1}", "callback_data": f"replace|{date_key}|{i}"},
+        ]
         for i in range(len(bands))
     ]
-    regen_rows = [regen_buttons[j:j + 2] for j in range(0, len(regen_buttons), 2)]
 
     markup = {
         "inline_keyboard": [
             [{"text": "✅ Approve & Render", "callback_data": f"approve|{date_key}"}],
-            *regen_rows,
+            *band_rows,
         ]
     }
     send_message(chat_id, approval_text, reply_markup=markup)
